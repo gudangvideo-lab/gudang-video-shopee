@@ -1,0 +1,39 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gudang-video-shopee-staging",
+  "main": "worker/index.ts",
+  "compatibility_date": "2024-10-11",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+
+  // Integrasi Cloudflare Workers Static Assets untuk frontend Vite di lingkungan staging
+  "assets": {
+    "directory": "./frontend/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+
+  // Konfigurasi Database Cloudflare D1 KHUSUS STAGING
+  // PERINGATAN KESELAMATAN:
+  // 1. DILARANG mengeksekusi migrasi atau deployment staging sebelum database_id di bawah
+  //    diganti dengan ID riil hasil pembuatan D1 staging: npx wrangler d1 create gudang-video-db-staging
+  // 2. DILARANG KERAS menyalin atau menggunakan database_id produksi!
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "gudang-video-db-staging",
+      "database_id": "c93bec9f-ef70-4466-8c05-af8fde326dd9"
+    }
+  ],
+
+  // Konfigurasi Storage Video Cloudflare R2 KHUSUS STAGING
+  // Dibuat terpisah via: npx wrangler r2 bucket create gudang-video-storage-staging
+  // DILARANG mengarahkan staging ke bucket produksi!
+  "r2_buckets": [
+    {
+      "binding": "VIDEOS_BUCKET",
+      "bucket_name": "gudang-video-storage-staging"
+    }
+  ]
+}

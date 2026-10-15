@@ -13,7 +13,8 @@
     "preview": "vite preview --config frontend/vite.config.ts",
     "typecheck": "tsc -b",
     "test": "vitest run",
-    "bootstrap:admin": "node scripts/bootstrap-admin.js"
+    "bootstrap:admin": "node scripts/bootstrap-admin.js",
+    "deploy:staging": "wrangler deploy --config wrangler.staging.jsonc"
   },
   "dependencies": {
     "react": "^18.3.1",
