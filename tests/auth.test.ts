@@ -14,6 +14,18 @@ import {
   MAX_PBKDF2_ITERATIONS
 } from '../worker/crypto';
 import { generateBootstrapAdminSql, parseBootstrapArgs, promptHiddenPassword } from '../scripts/bootstrap-admin';
+import {
+  clearAllRateLimits,
+  setRateLimitClock,
+  getRateLimitNow,
+  getRateLimitKeys,
+  getClientIp,
+  setMaxRateLimitEntries,
+  getMaxRateLimitEntries,
+  pruneRateLimitRecords,
+  checkRateLimit,
+  recordRateLimitFailure
+} from '../worker/security';
 
 declare const process: any;
 
@@ -52,6 +64,9 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
   let adminSessionCookie: string;
 
   beforeEach(async () => {
+    setMaxRateLimitEntries(null);
+    clearAllRateLimits();
+    setRateLimitClock(null);
     ctx = await createIsolatedTestDb();
     const admin = await seedTestSuperAdmin(ctx.db);
     adminId = admin.id;
@@ -59,6 +74,9 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
   });
 
   afterEach(async () => {
+    setRateLimitClock(null);
+    setMaxRateLimitEntries(null);
+    clearAllRateLimits();
     await ctx.cleanup();
   });
 
@@ -1616,6 +1634,603 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
       expect(res.status).toBe(200);
       const data = await getJson(res);
       expect(data.user.id).toBe(adminId);
+    });
+  });
+
+  describe('Hardening Rate Limiting & Regresi Keamanan Autentikasi', () => {
+    let testUser: { id: string; username: string; password: string };
+
+    beforeEach(async () => {
+      clearAllRateLimits();
+      setRateLimitClock(null);
+      setMaxRateLimitEntries(null);
+      const user = await seedTestAdminWithoutDevice(ctx.db, 'rate_limit_user', 'CorrectPass123!');
+      testUser = { id: user.id, username: user.username, password: user.password };
+    });
+
+    afterEach(() => {
+      clearAllRateLimits();
+      setRateLimitClock(null);
+      setMaxRateLimitEntries(null);
+    });
+
+    it('1. Login gagal mencapai batas (5 kali) menghasilkan HTTP 429 dan respons aman', async () => {
+      const sendLogin = (pwd: string) =>
+        worker.fetch(
+          new Request('http://localhost:8787/api/auth/login', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'CF-Connecting-IP': '192.0.2.1'
+            },
+            body: JSON.stringify({ username: testUser.username, password: pwd })
+          }),
+          ctx.env
+        );
+
+      // 5 kali percobaan gagal
+      for (let i = 0; i < 5; i++) {
+        const res = await sendLogin('WrongPass!');
+        expect(res.status).toBe(401);
+      }
+
+      // Percobaan ke-6 diblokir dengan 429
+      const blockedRes = await sendLogin('WrongPass!');
+      expect(blockedRes.status).toBe(429);
+      expect(blockedRes.headers.get('Retry-After')).toBeDefined();
+
+      const data = await getJson(blockedRes);
+      expect(data.error).toBe('TOO_MANY_ATTEMPTS');
+      expect(data.message).toContain('Terlalu banyak percobaan');
+      expect(JSON.stringify(data)).not.toContain(testUser.username);
+      expect(JSON.stringify(data)).not.toContain('WrongPass!');
+    });
+
+    it('2. Percobaan gagal di bawah ambang batas kedaluwarsa setelah jendela waktu (10 menit)', async () => {
+      let simulatedTime = 1700000000000;
+      setRateLimitClock(() => simulatedTime);
+
+      const sendLogin = () =>
+        worker.fetch(
+          new Request('http://localhost:8787/api/auth/login', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'CF-Connecting-IP': '192.0.2.2'
+            },
+            body: JSON.stringify({ username: testUser.username, password: 'WrongPassword!' })
+          }),
+          ctx.env
+        );
+
+      // 4 kali salah (di bawah batas 5)
+      for (let i = 0; i < 4; i++) {
+        const res = await sendLogin();
+        expect(res.status).toBe(401);
+      }
+
+      // Majukan waktu 11 menit (melewati jendela akumulasi 10 menit)
+      simulatedTime += 11 * 60 * 1000;
+
+      // Percobaan berikutnya harus diperlakukan sebagai jendela baru (kembali 401, BUKAN 429)
+      const nextRes = await sendLogin();
+      expect(nextRes.status).toBe(401);
+      const nextData = await getJson(nextRes);
+      expect(nextData.error).toBe('INVALID_CREDENTIALS');
+    });
+
+    it('3. Login berhasil mereset counter percobaan gagal', async () => {
+      const sendLogin = (pwd: string) =>
+        worker.fetch(
+          new Request('http://localhost:8787/api/auth/login', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'CF-Connecting-IP': '192.0.2.3'
+            },
+            body: JSON.stringify({ username: testUser.username, password: pwd })
+          }),
+          ctx.env
+        );
+
+      // 4 kali salah
+      for (let i = 0; i < 4; i++) {
+        const res = await sendLogin('WrongPass!');
+        expect(res.status).toBe(401);
+      }
+
+      // Login berhasil pada percobaan berikutnya
+      const okRes = await sendLogin(testUser.password);
+      expect(okRes.status).toBe(200);
+
+      // Setelah reset, 4 percobaan salah berikutnya tetap diizinkan (tidak langsung 429)
+      for (let i = 0; i < 4; i++) {
+        const res = await sendLogin('WrongPassAgain!');
+        expect(res.status).toBe(401);
+      }
+    });
+
+    it('4. Masa pemblokiran rate limit berakhir setelah durasi blokir (15 menit) selesai', async () => {
+      let simulatedTime = 1700000000000;
+      setRateLimitClock(() => simulatedTime);
+
+      const sendLogin = (pwd: string) =>
+        worker.fetch(
+          new Request('http://localhost:8787/api/auth/login', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'CF-Connecting-IP': '192.0.2.4'
+            },
+            body: JSON.stringify({ username: testUser.username, password: pwd })
+          }),
+          ctx.env
+        );
+
+      // Picu 5 kegagalan berturut-turut
+      for (let i = 0; i < 5; i++) {
+        await sendLogin('WrongPass!');
+      }
+
+      // Terblokir
+      const blockedRes = await sendLogin('WrongPass!');
+      expect(blockedRes.status).toBe(429);
+
+      // Majukan waktu 16 menit (melewati masa blokir 15 menit)
+      simulatedTime += 16 * 60 * 1000;
+
+      // Percobaan berikutnya harus diizinkan kembali
+      const afterBlockRes = await sendLogin('WrongPass!');
+      expect(afterBlockRes.status).toBe(401);
+    });
+
+    it('5. Batas IP berlaku pada endpoint aktivasi (POST /api/auth/activate)', async () => {
+      const sendActivate = (code: string) =>
+        worker.fetch(
+          new Request('http://localhost:8787/api/auth/activate', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'CF-Connecting-IP': '198.51.100.10'
+            },
+            body: JSON.stringify({
+              activation_code: code,
+              username: 'new_member_candidate',
+              password: 'MemberPass123!',
+              shopee_link: 'https://shopee.co.id/member_shop'
+            })
+          }),
+          ctx.env
+        );
+
+      // 10 kali aktivasi kode salah dari IP yang sama
+      for (let i = 0; i < 10; i++) {
+        const res = await sendActivate(`WRONG-CODE-${i}`);
+        expect(res.status).toBe(400);
+      }
+
+      // Percobaan ke-11 dari IP tersebut diblokir oleh IP rate limiter
+      const blockedRes = await sendActivate('WRONG-CODE-11');
+      expect(blockedRes.status).toBe(429);
+      const data = await getJson(blockedRes);
+      expect(data.error).toBe('TOO_MANY_ATTEMPTS');
+      expect(data.message).toContain('percobaan aktivasi');
+    });
+
+    it('6. Batas IP dan akun berlaku pada endpoint reset perangkat (POST /api/auth/reset-device)', async () => {
+      const sendReset = (pwd: string, code: string, ip = '198.51.100.20') =>
+        worker.fetch(
+          new Request('http://localhost:8787/api/auth/reset-device', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'CF-Connecting-IP': ip
+            },
+            body: JSON.stringify({
+              username: testUser.username,
+              password: pwd,
+              reset_code: code,
+              device_name: 'Device Baru'
+            })
+          }),
+          ctx.env
+        );
+
+      // 5 kali percobaan salah untuk akun target pada IP ini
+      for (let i = 0; i < 5; i++) {
+        const res = await sendReset('WrongPassword!', 'INVALID-RESET-CODE');
+        expect(res.status).toBe(401);
+      }
+
+      // Percobaan ke-6 diblokir dengan 429
+      const blockedRes = await sendReset('WrongPassword!', 'INVALID-RESET-CODE');
+      expect(blockedRes.status).toBe(429);
+      const data = await getJson(blockedRes);
+      expect(data.error).toBe('TOO_MANY_ATTEMPTS');
+      expect(data.message).toContain('pemulihan perangkat');
+    });
+
+    it('7. Permintaan yang diblokir rate limit tidak menjalankan verifikasi database atau crypto yang mahal', async () => {
+      // Buat akun terblokir
+      for (let i = 0; i < 5; i++) {
+        await worker.fetch(
+          new Request('http://localhost:8787/api/auth/login', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'CF-Connecting-IP': '198.51.100.30'
+            },
+            body: JSON.stringify({ username: testUser.username, password: 'WrongPassword!' })
+          }),
+          ctx.env
+        );
+      }
+
+      const auditBefore = await ctx.db
+        .prepare(`SELECT COUNT(*) as count FROM audit_logs`)
+        .first<{ count: number }>();
+
+      const blockedRes = await worker.fetch(
+        new Request('http://localhost:8787/api/auth/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'CF-Connecting-IP': '198.51.100.30'
+          },
+          body: JSON.stringify({ username: testUser.username, password: testUser.password })
+        }),
+        ctx.env
+      );
+
+      expect(blockedRes.status).toBe(429);
+
+      const auditAfter = await ctx.db
+        .prepare(`SELECT COUNT(*) as count FROM audit_logs`)
+        .first<{ count: number }>();
+      expect(auditAfter?.count).toBe(auditBefore?.count);
+    });
+
+    it('8. IP yang berbeda memiliki penghitung rate limit yang terpisah', async () => {
+      const sendLoginFromIp = (ip: string) =>
+        worker.fetch(
+          new Request('http://localhost:8787/api/auth/login', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'CF-Connecting-IP': ip
+            },
+            body: JSON.stringify({ username: testUser.username, password: 'WrongPassword!' })
+          }),
+          ctx.env
+        );
+
+      // Blokir IP 1
+      for (let i = 0; i < 5; i++) {
+        await sendLoginFromIp('203.0.113.10');
+      }
+      const ip1Res = await sendLoginFromIp('203.0.113.10');
+      expect(ip1Res.status).toBe(429);
+
+      // IP 2 dari pengguna yang sah tidak terblokir
+      const ip2Res = await sendLoginFromIp('203.0.113.20');
+      expect(ip2Res.status).toBe(401);
+    });
+
+    it('9. Respons HTTP 429 tidak membocorkan data sensitif atau kredensial', async () => {
+      for (let i = 0; i < 5; i++) {
+        await worker.fetch(
+          new Request('http://localhost:8787/api/auth/login', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'CF-Connecting-IP': '203.0.113.99'
+            },
+            body: JSON.stringify({ username: testUser.username, password: 'WrongPassword!' })
+          }),
+          ctx.env
+        );
+      }
+
+      const res = await worker.fetch(
+        new Request('http://localhost:8787/api/auth/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'CF-Connecting-IP': '203.0.113.99'
+          },
+          body: JSON.stringify({ username: testUser.username, password: 'WrongPassword!' })
+        }),
+        ctx.env
+      );
+
+      expect(res.status).toBe(429);
+      const text = await res.text();
+      expect(text).not.toContain(testUser.username);
+      expect(text).not.toContain(testUser.password);
+      expect(text).not.toContain('stack');
+      expect(text).not.toContain('hash');
+      expect(text).not.toContain('salt');
+    });
+
+    it('10. Username, kode aktivasi, kode reset, dan password tidak pernah disimpan mentah dalam key Map', async () => {
+      clearAllRateLimits();
+
+      const sensitiveUser = 'super_secret_username_99';
+      const sensitivePass = 'SuperSecretP@ssword99!';
+      const sensitiveActCode = 'SECRET-ACTIVATE-CODE-999';
+      const sensitiveResetCode = 'SECRET-RESET-CODE-888';
+
+      // 1. Picu login attempt
+      await worker.fetch(
+        new Request('http://localhost:8787/api/auth/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'CF-Connecting-IP': '198.51.100.50'
+          },
+          body: JSON.stringify({ username: sensitiveUser, password: sensitivePass })
+        }),
+        ctx.env
+      );
+
+      // 2. Picu activate attempt
+      await worker.fetch(
+        new Request('http://localhost:8787/api/auth/activate', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'CF-Connecting-IP': '198.51.100.50'
+          },
+          body: JSON.stringify({
+            activation_code: sensitiveActCode,
+            username: sensitiveUser,
+            password: sensitivePass,
+            shopee_link: 'https://shopee.co.id/test_shop'
+          })
+        }),
+        ctx.env
+      );
+
+      // 3. Picu reset-device attempt
+      await worker.fetch(
+        new Request('http://localhost:8787/api/auth/reset-device', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'CF-Connecting-IP': '198.51.100.50'
+          },
+          body: JSON.stringify({
+            username: sensitiveUser,
+            password: sensitivePass,
+            reset_code: sensitiveResetCode
+          })
+        }),
+        ctx.env
+      );
+
+      const keys = getRateLimitKeys();
+      expect(keys.length).toBeGreaterThan(0);
+
+      for (const k of keys) {
+        expect(k).not.toContain(sensitiveUser);
+        expect(k).not.toContain(sensitivePass);
+        expect(k).not.toContain(sensitiveActCode);
+        expect(k).not.toContain(sensitiveResetCode);
+        expect(k).toMatch(/^(login|activate_ip|reset_ip|reset_acc):[0-9a-f]{64}$/);
+      }
+    });
+
+    it('11. getClientIp hanya mempercayai CF-Connecting-IP dan menolak pemalsuan X-Forwarded-For', () => {
+      // 1. CF-Connecting-IP sah digunakan
+      const reqValid = new Request('http://localhost:8787/api/auth/login', {
+        headers: { 'CF-Connecting-IP': '203.0.113.15' }
+      });
+      expect(getClientIp(reqValid)).toBe('203.0.113.15');
+
+      // 2. Pemalsuan X-Forwarded-For tanpa CF-Connecting-IP ditolak dan kembali ke fallback 127.0.0.1
+      const reqSpoofed = new Request('http://localhost:8787/api/auth/login', {
+        headers: { 'X-Forwarded-For': '198.51.100.99, 10.0.0.1' }
+      });
+      expect(getClientIp(reqSpoofed)).toBe('127.0.0.1');
+
+      // 3. Gabungan CF-Connecting-IP sah dan X-Forwarded-For palsu tetap memprioritaskan CF-Connecting-IP
+      const reqMixed = new Request('http://localhost:8787/api/auth/login', {
+        headers: {
+          'CF-Connecting-IP': '203.0.113.25',
+          'X-Forwarded-For': '198.51.100.99'
+        }
+      });
+      expect(getClientIp(reqMixed)).toBe('203.0.113.25');
+    });
+
+    it('12. Eviksi kapasitas Map melindungi catatan blokir aktif dan hanya membuang entri non-blokir', () => {
+      setMaxRateLimitEntries(3);
+      clearAllRateLimits();
+
+      const now = 1700000000000;
+      setRateLimitClock(() => now);
+
+      // 1. Kunci A dibuat terblokir aktif (blockedUntil = now + 15 menit)
+      for (let i = 0; i < 5; i++) {
+        recordRateLimitFailure('key-blocked-A', { maxAttempts: 5, windowMs: 10 * 60 * 1000, blockDurationMs: 15 * 60 * 1000 });
+      }
+      expect(checkRateLimit('key-blocked-A').allowed).toBe(false);
+
+      // 2. Kunci B dan C memiliki 1 kegagalan (tidak diblokir)
+      recordRateLimitFailure('key-unblocked-B');
+      recordRateLimitFailure('key-unblocked-C');
+
+      // 3. Tambahkan Kunci D (unblocked) -> total ukuran menjadi 4, melebihi kapasitas 3
+      recordRateLimitFailure('key-unblocked-D');
+
+      // 4. Jalankan pruning
+      pruneRateLimitRecords(now);
+
+      const keys = getRateLimitKeys();
+      // Buktikan kapasitas dibatasi sesuai batas maksimum
+      expect(keys.length).toBeLessThanOrEqual(3);
+      // JAMINAN KEAMANAN KRITIS: Kunci A yang sedang diblokir aktif TIDAK BOLEH terhapus!
+      expect(keys).toContain('key-blocked-A');
+      expect(checkRateLimit('key-blocked-A').allowed).toBe(false);
+      // Kunci unblocked tertua (B) yang dievakuasi
+      expect(keys).not.toContain('key-unblocked-B');
+    });
+
+    it('13. Kondisi saturasi kapasitas penuh blokir aktif menerapkan fail-closed tanpa menghapus blokir lama', () => {
+      setMaxRateLimitEntries(2);
+      clearAllRateLimits();
+
+      const now = 1700000000000;
+      setRateLimitClock(() => now);
+
+      // Penuhi seluruh kapasitas (2 entri) dengan blokir aktif
+      for (let i = 0; i < 5; i++) {
+        recordRateLimitFailure('active-lock-1', { maxAttempts: 5, windowMs: 10 * 60 * 1000, blockDurationMs: 15 * 60 * 1000 });
+        recordRateLimitFailure('active-lock-2', { maxAttempts: 5, windowMs: 10 * 60 * 1000, blockDurationMs: 15 * 60 * 1000 });
+      }
+
+      // Kunci ketiga yang baru mencoba masuk saat kapasitas jenuh
+      const checkResult = checkRateLimit('incoming-new-key');
+      // Perilaku fail-closed aman: ditolak sementara (429) alih-alih meloloskan request
+      expect(checkResult.allowed).toBe(false);
+      expect(checkResult.retryAfterSeconds).toBeDefined();
+
+      // Pastikan kedua blokir aktif sebelumnya tidak ada yang terhapus
+      const keys = getRateLimitKeys();
+      expect(keys).toContain('active-lock-1');
+      expect(keys).toContain('active-lock-2');
+    });
+
+    it('14. Password benar tetapi reset code salah tetap dihitung sebagai kegagalan rate limit', async () => {
+      const sendReset = (pwd: string, code: string) =>
+        worker.fetch(
+          new Request('http://localhost:8787/api/auth/reset-device', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'CF-Connecting-IP': '198.51.100.77'
+            },
+            body: JSON.stringify({
+              username: testUser.username,
+              password: pwd,
+              reset_code: code,
+              device_name: 'Device Test'
+            })
+          }),
+          ctx.env
+        );
+
+      // 5 kali percobaan dengan password BENAR tetapi reset code SALAH
+      for (let i = 0; i < 5; i++) {
+        const res = await sendReset(testUser.password, `INVALID-CODE-${i}`);
+        expect(res.status).toBe(400);
+        const data = await getJson(res);
+        expect(data.error).toBe('INVALID_RESET_CODE');
+      }
+
+      // Percobaan ke-6 harus diblokir oleh rate limiter (HTTP 429)
+      const blockedRes = await sendReset(testUser.password, 'INVALID-CODE-6');
+      expect(blockedRes.status).toBe(429);
+      const blockedData = await getJson(blockedRes);
+      expect(blockedData.error).toBe('TOO_MANY_ATTEMPTS');
+    });
+
+    it('15. Reset perangkat yang sukses membersihkan counter dan mengizinkan kuota percobaan berikutnya', async () => {
+      // 1. Buat member dengan akun dan perangkat awal
+      const { code: actCode } = await seedTestActivationCode(ctx.db, adminId);
+      const memberPass = 'ValidMemberPassword123!';
+      const actRes = await worker.fetch(
+        new Request('http://localhost:8787/api/auth/activate', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'CF-Connecting-IP': '198.51.100.88'
+          },
+          body: JSON.stringify({
+            activation_code: actCode,
+            username: 'clean_reset_user',
+            password: memberPass,
+            shopee_link: 'https://shopee.co.id/clean_reset_shop'
+          })
+        }),
+        ctx.env
+      );
+      expect(actRes.status).toBe(200);
+
+      const userInDb = await ctx.db
+        .prepare(`SELECT id FROM users WHERE username = 'clean_reset_user'`)
+        .first<{ id: string }>();
+
+      // 2. Terbitkan kode reset yang sah dari admin
+      const issueRes = await worker.fetch(
+        new Request(`http://localhost:8787/api/admin/users/${userInDb!.id}/reset-code`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Cookie: adminSessionCookie
+          },
+          body: JSON.stringify({ reason: 'Ganti HP baru' })
+        }),
+        ctx.env
+      );
+      expect(issueRes.status).toBe(201);
+      const issueData = await getJson(issueRes);
+      const validResetCode = issueData.data.reset_code;
+
+      const sendResetReq = (pwd: string, code: string) =>
+        worker.fetch(
+          new Request('http://localhost:8787/api/auth/reset-device', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'CF-Connecting-IP': '198.51.100.88'
+            },
+            body: JSON.stringify({
+              username: 'clean_reset_user',
+              password: pwd,
+              reset_code: code,
+              device_name: 'Browser Baru'
+            })
+          }),
+          ctx.env
+        );
+
+      // 3. Akumulasikan 4 kegagalan (tepat di bawah batas 5)
+      for (let i = 0; i < 4; i++) {
+        const failRes = await sendResetReq(memberPass, 'WRONG-RESET-CODE');
+        expect(failRes.status).toBe(400);
+      }
+
+      // 4. Kirim reset yang sah dengan kode valid
+      const successRes = await sendResetReq(memberPass, validResetCode);
+      expect(successRes.status).toBe(200);
+      const successData = await getJson(successRes);
+      expect(successData.status).toBe('ok');
+
+      // 5. Buktikan bahwa counter telah bersih: 4 percobaan gagal berikutnya tidak langsung memicu 429
+      for (let i = 0; i < 4; i++) {
+        const afterRes = await sendResetReq('WrongPassword!', 'ANY-CODE');
+        expect(afterRes.status).toBe(401);
+      }
+    });
+
+    it('16. Fake clock dapat diset dan dibersihkan kembali ke jam sistem secara benar', () => {
+      const fixedTime = 1600000000000;
+      setRateLimitClock(() => fixedTime);
+      expect(getRateLimitNow()).toBe(fixedTime);
+
+      setRateLimitClock(null);
+      const systemNow = getRateLimitNow();
+      expect(systemNow).toBeGreaterThan(1700000000000);
+      expect(Math.abs(systemNow - Date.now())).toBeLessThan(50);
+    });
+
+    it('17. Override kapasitas rate limit dapat diset dan dikembalikan ke nilai default (5000)', () => {
+      setMaxRateLimitEntries(10);
+      expect(getMaxRateLimitEntries()).toBe(10);
+
+      setMaxRateLimitEntries(null);
+      expect(getMaxRateLimitEntries()).toBe(5000);
     });
   });
 });

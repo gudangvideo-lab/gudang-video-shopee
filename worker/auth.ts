@@ -30,9 +30,14 @@ import {
   isValidPassword,
   parseJsonBody,
   jsonResponse,
+  checkRateLimit,
+  recordRateLimitFailure,
+  resetRateLimit,
   checkLoginRateLimit,
   recordFailedLogin,
   resetLoginRateLimit,
+  getClientIp,
+  hashRateLimitKey,
   isValidShopeeUrl,
   normalizeShopeeUrl
 } from './security';
@@ -44,6 +49,27 @@ import { validateSession, parseSqliteDate, UserRole } from './session';
 export async function handleActivate(request: Request, db: D1Database): Promise<Response> {
   if (!verifyCsrf(request)) {
     return jsonResponse({ error: 'CSRF_FORBIDDEN', message: 'Permintaan lintas situs diblokir.' }, 403);
+  }
+
+  // Rate Limiting berbasis IP sebelum komputasi dan query database
+  const clientIp = getClientIp(request);
+  const activateIpKey = await hashRateLimitKey('activate_ip', clientIp);
+  const ACTIVATE_LIMIT_OPTIONS = {
+    maxAttempts: 10,
+    windowMs: 10 * 60 * 1000,
+    blockDurationMs: 15 * 60 * 1000
+  };
+
+  const ipRateLimit = checkRateLimit(activateIpKey, ACTIVATE_LIMIT_OPTIONS);
+  if (!ipRateLimit.allowed) {
+    return jsonResponse(
+      {
+        error: 'TOO_MANY_ATTEMPTS',
+        message: 'Terlalu banyak percobaan aktivasi dari alamat IP ini. Silakan tunggu beberapa saat.'
+      },
+      429,
+      { 'Retry-After': String(ipRateLimit.retryAfterSeconds || 60) }
+    );
   }
 
   const body = await parseJsonBody(request);
@@ -99,6 +125,7 @@ export async function handleActivate(request: Request, db: D1Database): Promise<
     .first<CodeRow>();
 
   if (!codeRow) {
+    recordRateLimitFailure(activateIpKey, ACTIVATE_LIMIT_OPTIONS);
     return jsonResponse({
       error: 'INVALID_ACTIVATION_CODE',
       message: 'Kode aktivasi tidak valid, telah digunakan, atau kedaluwarsa.'
@@ -106,6 +133,7 @@ export async function handleActivate(request: Request, db: D1Database): Promise<
   }
 
   if (codeRow.status !== 'active' || codeRow.used_count !== 0 || parseSqliteDate(codeRow.expires_at) <= Date.now()) {
+    recordRateLimitFailure(activateIpKey, ACTIVATE_LIMIT_OPTIONS);
     return jsonResponse({
       error: 'INVALID_ACTIVATION_CODE',
       message: 'Kode aktivasi tidak valid, telah digunakan, atau kedaluwarsa.'
@@ -186,6 +214,8 @@ export async function handleActivate(request: Request, db: D1Database): Promise<
     }, 400);
   }
 
+  resetRateLimit(activateIpKey);
+
   // Berikan 2 cookie: cookie perangkat permanen dan cookie sesi 30 hari
   const response = jsonResponse({
     status: 'ok',
@@ -224,8 +254,8 @@ export async function handleLogin(request: Request, db: D1Database): Promise<Res
     }, 401);
   }
 
-  const clientIp = request.headers.get('CF-Connecting-IP') || '127.0.0.1';
-  const rateLimitKey = `${clientIp}:${username.trim().toLowerCase()}`;
+  const clientIp = getClientIp(request);
+  const rateLimitKey = await hashRateLimitKey('login', clientIp, username);
 
   const rateLimitStatus = checkLoginRateLimit(rateLimitKey);
   if (!rateLimitStatus.allowed) {
@@ -473,6 +503,27 @@ export async function handleResetDevice(request: Request, db: D1Database): Promi
     return jsonResponse({ error: 'CSRF_FORBIDDEN', message: 'Permintaan lintas situs diblokir.' }, 403);
   }
 
+  // Rate Limiting berbasis IP sebelum komputasi dan query database
+  const clientIp = getClientIp(request);
+  const resetIpKey = await hashRateLimitKey('reset_ip', clientIp);
+  const RESET_IP_LIMIT_OPTIONS = {
+    maxAttempts: 10,
+    windowMs: 10 * 60 * 1000,
+    blockDurationMs: 15 * 60 * 1000
+  };
+
+  const ipRateLimit = checkRateLimit(resetIpKey, RESET_IP_LIMIT_OPTIONS);
+  if (!ipRateLimit.allowed) {
+    return jsonResponse(
+      {
+        error: 'TOO_MANY_ATTEMPTS',
+        message: 'Terlalu banyak percobaan pemulihan perangkat dari alamat IP ini. Silakan tunggu beberapa saat.'
+      },
+      429,
+      { 'Retry-After': String(ipRateLimit.retryAfterSeconds || 60) }
+    );
+  }
+
   const body = await parseJsonBody(request);
   if (!body) {
     return jsonResponse({ error: 'INVALID_JSON', message: 'Payload JSON tidak valid atau melebihi batas ukuran.' }, 400);
@@ -485,6 +536,26 @@ export async function handleResetDevice(request: Request, db: D1Database): Promi
       error: 'MISSING_FIELDS',
       message: 'Nama pengguna, kata sandi, dan kode reset wajib diisi.'
     }, 400);
+  }
+
+  // Rate Limiting per akun (dikombinasikan dengan IP untuk mencegah DoS antar-pengguna)
+  const resetAccountKey = await hashRateLimitKey('reset_acc', clientIp, username);
+  const RESET_ACCOUNT_LIMIT_OPTIONS = {
+    maxAttempts: 5,
+    windowMs: 10 * 60 * 1000,
+    blockDurationMs: 15 * 60 * 1000
+  };
+
+  const accountRateLimit = checkRateLimit(resetAccountKey, RESET_ACCOUNT_LIMIT_OPTIONS);
+  if (!accountRateLimit.allowed) {
+    return jsonResponse(
+      {
+        error: 'TOO_MANY_ATTEMPTS',
+        message: 'Terlalu banyak percobaan pemulihan perangkat untuk akun ini. Silakan tunggu beberapa saat.'
+      },
+      429,
+      { 'Retry-After': String(accountRateLimit.retryAfterSeconds || 60) }
+    );
   }
 
   interface UserRow {
@@ -501,6 +572,8 @@ export async function handleResetDevice(request: Request, db: D1Database): Promi
 
   if (!user) {
     await dummyPasswordHash(password);
+    recordRateLimitFailure(resetIpKey, RESET_IP_LIMIT_OPTIONS);
+    recordRateLimitFailure(resetAccountKey, RESET_ACCOUNT_LIMIT_OPTIONS);
     return jsonResponse({
       error: 'INVALID_CREDENTIALS',
       message: 'Nama pengguna atau kata sandi tidak valid.'
@@ -509,6 +582,8 @@ export async function handleResetDevice(request: Request, db: D1Database): Promi
 
   const isPasswordValid = await verifyPassword(password, user.password_hash, user.password_salt);
   if (!isPasswordValid) {
+    recordRateLimitFailure(resetIpKey, RESET_IP_LIMIT_OPTIONS);
+    recordRateLimitFailure(resetAccountKey, RESET_ACCOUNT_LIMIT_OPTIONS);
     return jsonResponse({
       error: 'INVALID_CREDENTIALS',
       message: 'Nama pengguna atau kata sandi tidak valid.'
@@ -543,6 +618,8 @@ export async function handleResetDevice(request: Request, db: D1Database): Promi
     .first<ResetCodeRow>();
 
   if (!resetRow) {
+    recordRateLimitFailure(resetIpKey, RESET_IP_LIMIT_OPTIONS);
+    recordRateLimitFailure(resetAccountKey, RESET_ACCOUNT_LIMIT_OPTIONS);
     return jsonResponse({
       error: 'INVALID_RESET_CODE',
       message: 'Kode reset tidak valid, telah digunakan, atau kedaluwarsa.'
@@ -550,6 +627,8 @@ export async function handleResetDevice(request: Request, db: D1Database): Promi
   }
 
   if (resetRow.status !== 'active' || resetRow.used_count !== 0 || parseSqliteDate(resetRow.expires_at) <= Date.now()) {
+    recordRateLimitFailure(resetIpKey, RESET_IP_LIMIT_OPTIONS);
+    recordRateLimitFailure(resetAccountKey, RESET_ACCOUNT_LIMIT_OPTIONS);
     return jsonResponse({
       error: 'INVALID_RESET_CODE',
       message: 'Kode reset tidak valid, telah digunakan, atau kedaluwarsa.'
@@ -617,6 +696,9 @@ export async function handleResetDevice(request: Request, db: D1Database): Promi
       message: 'Gagal mereset perangkat. Silakan coba kembali atau hubungi admin.'
     }, 400);
   }
+
+  resetRateLimit(resetAccountKey);
+  resetRateLimit(resetIpKey);
 
   const response = jsonResponse({
     status: 'ok',

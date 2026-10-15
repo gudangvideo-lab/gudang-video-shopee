@@ -3,6 +3,8 @@
  * Utilitas validasi keamanan HTTP, perlindungan CSRF, dan pembatasan percobaan login (rate limiting).
  */
 
+import { sha256 } from './crypto';
+
 /**
  * Validasi header Origin / Sec-Fetch-Site untuk mencegah CSRF pada request mutasi state.
  * Memvalidasi origin terhadap URL target Worker yang tepercaya, bukan hanya Host header klien.
@@ -121,64 +123,247 @@ export function jsonResponse(data: unknown, status = 200, extraHeaders: Record<s
 }
 
 /**
- * Rate Limiter sederhana in-memory untuk memitigasi serangan brute-force login pada instance Worker.
- *
- * PERINGATAN ARSITEKTUR CLOUDFLARE WORKERS:
- * Rate limiter berbasis Map ini hanya tersimpan di heap memori V8 isolate lokal.
- * Karena Cloudflare Workers mendistribusikan request ke berbagai edge PoP dan isolate yang berbeda,
- * rate limiter in-memory ini TIDAK menjamin proteksi global antar-isolate.
- *
- * Rekomendasi produksi skala besar:
- * 1. Cloudflare Native WAF / Zone Rate Limiting Rules (direkomendasikan, zero-latency).
- * 2. Cloudflare KV dengan expiration TTL per IP/Username.
- * 3. Cloudflare Durable Objects sebagai koordinator state terdistribusi yang konsisten.
+ * Ekstraksi alamat IP klien dari header Cloudflare tepercaya.
+ * Menggunakan CF-Connecting-IP jika tersedia dan bernilai valid.
+ * Tidak mempercayai X-Forwarded-For secara default karena header tersebut
+ * dapat dipalsukan oleh klien. Jika CF-Connecting-IP tidak tersedia,
+ * mengembalikan fallback tetap '127.0.0.1'.
  */
-interface RateLimitRecord {
+export function getClientIp(request: Request): string {
+  const cfIp = request.headers.get('CF-Connecting-IP');
+  if (cfIp && cfIp.trim()) {
+    return cfIp.trim();
+  }
+  return '127.0.0.1';
+}
+
+/**
+ * Menghasilkan kunci rate limit berupa hash SHA-256 untuk memastikan bahwa
+ * username, kode aktivasi, kode reset, kata sandi, maupun data sensitif lainnya
+ * tidak pernah tersimpan mentah (plaintext) di dalam memori Map maupun log.
+ */
+export async function hashRateLimitKey(prefix: string, ...parts: string[]): Promise<string> {
+  const raw = `${prefix}:${parts.map((p) => p.trim().toLowerCase()).join(':')}`;
+  const hash = await sha256(raw);
+  return `${prefix}:${hash}`;
+}
+
+export interface RateLimitOptions {
+  maxAttempts: number;
+  windowMs: number;
+  blockDurationMs: number;
+}
+
+export interface RateLimitRecord {
   attempts: number;
+  firstAttemptAt: number;
+  lastAttemptAt: number;
   blockedUntil: number;
 }
 
-const loginAttempts = new Map<string, RateLimitRecord>();
-const MAX_ATTEMPTS = 5;
-const BLOCK_DURATION_MS = 15 * 60 * 1000; // 15 menit
+const rateLimitRecords = new Map<string, RateLimitRecord>();
+const DEFAULT_MAX_RATE_LIMIT_ENTRIES = 5000;
+let maxEntriesOverride: number | null = null;
 
-export function checkLoginRateLimit(key: string): { allowed: boolean; retryAfterSeconds?: number } {
-  const now = Date.now();
-  const record = loginAttempts.get(key);
+export function setMaxRateLimitEntries(max: number | null): void {
+  maxEntriesOverride = max;
+}
+
+export function getMaxRateLimitEntries(): number {
+  return maxEntriesOverride !== null ? maxEntriesOverride : DEFAULT_MAX_RATE_LIMIT_ENTRIES;
+}
+
+let rateLimitClockOverride: (() => number) | null = null;
+
+export function setRateLimitClock(clock: (() => number) | null): void {
+  rateLimitClockOverride = clock;
+}
+
+export function getRateLimitNow(): number {
+  return rateLimitClockOverride ? rateLimitClockOverride() : Date.now();
+}
+
+/**
+ * Pembersihan entri rate limit yang sudah kedaluwarsa untuk mencegah pertumbuhan
+ * memori tanpa batas pada heap V8 isolate Worker.
+ *
+ * Aturan Perlindungan Blokir & Eviksi:
+ * 1. Entri dengan masa blokir aktif (blockedUntil > now) TIDAK PERNAH dihapus selama eviksi kapasitas.
+ * 2. Entri kedaluwarsa (masa blokir telah lewat atau jendela akumulasi telah lewat) dibersihkan terlebih dahulu.
+ * 3. Jika kapasitas (getMaxRateLimitEntries()) masih terlampaui, HANYA entri yang tidak sedang diblokir
+ *    (blockedUntil <= now) yang boleh dievakuasi, diurutkan dari yang paling lama tidak aktif.
+ * 4. Jika seluruh entri di dalam Map sedang dalam masa blokir aktif, tidak ada entri blokir yang dihapus.
+ */
+export function pruneRateLimitRecords(now = getRateLimitNow()): void {
+  const maxEntries = getMaxRateLimitEntries();
+
+  // Langkah 1: Bersihkan entri yang sudah kedaluwarsa secara alami
+  for (const [key, record] of rateLimitRecords.entries()) {
+    if (record.blockedUntil > 0) {
+      if (record.blockedUntil <= now) {
+        rateLimitRecords.delete(key);
+      }
+    } else {
+      if (now - record.firstAttemptAt > 15 * 60 * 1000) {
+        rateLimitRecords.delete(key);
+      }
+    }
+  }
+
+  // Langkah 2: Jika kapasitas masih melebihi batas aman, eviksi HANYA entri non-blokir tertua
+  if (rateLimitRecords.size > maxEntries) {
+    const unblockedEntries: Array<[string, RateLimitRecord]> = [];
+    for (const entry of rateLimitRecords.entries()) {
+      if (entry[1].blockedUntil <= now) {
+        unblockedEntries.push(entry);
+      }
+    }
+
+    unblockedEntries.sort((a, b) => a[1].lastAttemptAt - b[1].lastAttemptAt);
+
+    const needed = rateLimitRecords.size - maxEntries;
+    const toRemove = unblockedEntries.slice(0, needed);
+    for (const [k] of toRemove) {
+      rateLimitRecords.delete(k);
+    }
+  }
+}
+
+export const DEFAULT_LOGIN_LIMIT_OPTIONS: RateLimitOptions = {
+  maxAttempts: 5,
+  windowMs: 10 * 60 * 1000, // 10 menit
+  blockDurationMs: 15 * 60 * 1000 // 15 menit
+};
+
+export function checkRateLimit(
+  key: string,
+  options: RateLimitOptions = DEFAULT_LOGIN_LIMIT_OPTIONS
+): { allowed: boolean; retryAfterSeconds?: number } {
+  const now = getRateLimitNow();
+  const record = rateLimitRecords.get(key);
 
   if (!record) {
+    // Jika entri belum tercatat tetapi kapasitas Map sudah mencapai batas dan
+    // SELURUH entri adalah blokir aktif (kondisi saturasi serangan tinggi):
+    // Terapkan penolakan sementara fail-closed (60 detik) untuk melindungi Worker dari kehabisan memori.
+    const maxEntries = getMaxRateLimitEntries();
+    if (rateLimitRecords.size >= maxEntries) {
+      pruneRateLimitRecords(now);
+      if (rateLimitRecords.size >= maxEntries) {
+        let hasUnblocked = false;
+        for (const r of rateLimitRecords.values()) {
+          if (r.blockedUntil <= now) {
+            hasUnblocked = true;
+            break;
+          }
+        }
+        if (!hasUnblocked) {
+          return { allowed: false, retryAfterSeconds: 60 };
+        }
+      }
+    }
     return { allowed: true };
   }
 
+  // 1. Jika sedang dalam masa blokir aktif
   if (record.blockedUntil > now) {
-    const retryAfterSeconds = Math.ceil((record.blockedUntil - now) / 1000);
+    const retryAfterSeconds = Math.max(1, Math.ceil((record.blockedUntil - now) / 1000));
     return { allowed: false, retryAfterSeconds };
   }
 
-  // Jika masa blokir sudah lewat, reset
+  // 2. Jika masa blokir sudah berakhir, bersihkan
   if (record.blockedUntil !== 0 && record.blockedUntil <= now) {
-    loginAttempts.delete(key);
+    rateLimitRecords.delete(key);
+    return { allowed: true };
+  }
+
+  // 3. Jika jendela waktu telah lewat sejak percobaan pertama tanpa mencapai blokir, reset
+  if (now - record.firstAttemptAt > options.windowMs) {
+    rateLimitRecords.delete(key);
     return { allowed: true };
   }
 
   return { allowed: true };
 }
 
-export function recordFailedLogin(key: string): void {
-  const now = Date.now();
-  const record = loginAttempts.get(key) || { attempts: 0, blockedUntil: 0 };
-  record.attempts += 1;
+export function recordRateLimitFailure(
+  key: string,
+  options: RateLimitOptions = DEFAULT_LOGIN_LIMIT_OPTIONS
+): void {
+  const now = getRateLimitNow();
+  const maxEntries = getMaxRateLimitEntries();
 
-  if (record.attempts >= MAX_ATTEMPTS) {
-    record.blockedUntil = now + BLOCK_DURATION_MS;
+  if (rateLimitRecords.size >= maxEntries) {
+    pruneRateLimitRecords(now);
   }
 
-  loginAttempts.set(key, record);
+  let record = rateLimitRecords.get(key);
+
+  if (!record) {
+    // Jika kapasitas masih penuh setelah pruning dan seluruh entri sedang diblokir aktif:
+    // Blokir langsung entri baru ini (fail-closed) dan jangan menghapus blokir aktif yang sudah ada.
+    if (rateLimitRecords.size >= maxEntries) {
+      let hasUnblocked = false;
+      for (const r of rateLimitRecords.values()) {
+        if (r.blockedUntil <= now) {
+          hasUnblocked = true;
+          break;
+        }
+      }
+      if (!hasUnblocked) {
+        record = {
+          attempts: options.maxAttempts,
+          firstAttemptAt: now,
+          lastAttemptAt: now,
+          blockedUntil: now + options.blockDurationMs
+        };
+        rateLimitRecords.set(key, record);
+        return;
+      }
+    }
+
+    record = {
+      attempts: 1,
+      firstAttemptAt: now,
+      lastAttemptAt: now,
+      blockedUntil: 0
+    };
+  } else if (record.blockedUntil === 0 && now - record.firstAttemptAt > options.windowMs) {
+    record.attempts = 1;
+    record.firstAttemptAt = now;
+    record.lastAttemptAt = now;
+    record.blockedUntil = 0;
+  } else {
+    record.attempts += 1;
+    record.lastAttemptAt = now;
+  }
+
+  if (record.attempts >= options.maxAttempts) {
+    record.blockedUntil = now + options.blockDurationMs;
+  }
+
+  rateLimitRecords.set(key, record);
 }
 
-export function resetLoginRateLimit(key: string): void {
-  loginAttempts.delete(key);
+export function resetRateLimit(key: string): void {
+  rateLimitRecords.delete(key);
 }
+
+export function clearAllRateLimits(): void {
+  rateLimitRecords.clear();
+}
+
+/**
+ * Helper diagnostik pengujian untuk memastikan tidak ada rahasia mentah pada Map key.
+ */
+export function getRateLimitKeys(): string[] {
+  return Array.from(rateLimitRecords.keys());
+}
+
+// Alias kompatibilitas
+export const checkLoginRateLimit = checkRateLimit;
+export const recordFailedLogin = recordRateLimitFailure;
+export const resetLoginRateLimit = resetRateLimit;
 
 const ALLOWED_SHOPEE_DOMAINS = ['shopee.co.id', 'shope.ee', 'shopee.com', 'shopee.id'];
 
