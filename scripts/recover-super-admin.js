@@ -6,7 +6,7 @@
  * FITUR KEAMANAN:
  * 1. Tanpa bypass endpoint publik: Dijalankan out-of-band via CLI oleh pemilik sistem.
  * 2. Tanpa logging kredensial: Password tidak pernah dicetak dalam plain text, riwayat shell, atau log.
- * 3. Input tersembunyi (*): Menggunakan interface terminal masked.
+ * 3. Input tersembunyi (*): Menggunakan interface terminal masked. Opsi argumen CLI --password/-p dinonaktifkan.
  * 4. Algoritma identik aplikasi: PBKDF2-HMAC-SHA512 (10.000 iterasi), salt 16-byte CSPRNG.
  * 5. Proteksi role: Klausa SQL membatasi pembaruan HANYA untuk baris dengan role = 'super_admin'.
  * 6. Audit logging otomatis: Mencatat entri pemulihan ke tabel audit_logs.
@@ -90,21 +90,27 @@ export async function generateRecoverySuperAdminSql(username, newPassword) {
   };
 }
 
-function promptHiddenPassword(questionText) {
-  return new Promise((resolve) => {
+export function promptHiddenPassword(questionText) {
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    if (!stdin.isTTY) {
+      reject(new Error('TTY_REQUIRED: Operasi ini memerlukan terminal TTY interaktif untuk memasukkan password secara aman dengan proteksi masking. Lingkungan non-interaktif ditolak demi mencegah kebocoran kredensial.'));
+      return;
+    }
+
     const rl = readline.createInterface({
-      input: process.stdin,
+      input: stdin,
       output: process.stderr
     });
 
-    const stdin = process.stdin;
     let password = '';
-
     process.stderr.write(questionText);
 
     const onData = (charBuffer) => {
       const char = charBuffer.toString();
       if (char === '\n' || char === '\r' || char === '\u0004') {
+        stdin.setRawMode(false);
+        stdin.pause();
         stdin.removeListener('data', onData);
         process.stderr.write('\n');
         rl.close();
@@ -115,31 +121,30 @@ function promptHiddenPassword(questionText) {
           process.stderr.write('\b \b');
         }
       } else if (char === '\u0003') {
+        stdin.setRawMode(false);
         process.stderr.write('\nOperasi dibatalkan.\n');
-        process.exit(1);
+        process.exit(130);
       } else {
         password += char;
         process.stderr.write('*');
       }
     };
 
-    if (stdin.isTTY) {
-      stdin.setRawMode(true);
-      stdin.resume();
-      stdin.on('data', onData);
-    } else {
-      rl.question('', (ans) => {
-        rl.close();
-        resolve(ans);
-      });
-    }
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on('data', onData);
   });
 }
 
-function promptQuestion(questionText) {
-  return new Promise((resolve) => {
+export function promptQuestion(questionText) {
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    if (!stdin.isTTY) {
+      reject(new Error('TTY_REQUIRED: Masukkan username via opsi --username di lingkungan non-interaktif, atau jalankan di terminal interaktif.'));
+      return;
+    }
     const rl = readline.createInterface({
-      input: process.stdin,
+      input: stdin,
       output: process.stderr
     });
     rl.question(questionText, (ans) => {
@@ -149,33 +154,84 @@ function promptQuestion(questionText) {
   });
 }
 
-function parseCliArgs() {
-  const args = process.argv.slice(2);
-  const result = {
-    username: '',
-    password: '',
-    outputFile: ''
-  };
+/**
+ * Mengurai dan memvalidasi argumen CLI pemulihan super admin.
+ * Opsi password via CLI argument (--password / --pass / -p) ditolak secara eksplisit
+ * demi mencegah kebocoran password pada daftar proses OS dan shell history.
+ */
+export function parseRecoveryArgs(args = []) {
+  let username = '';
+  let outputFile = '';
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === '--username' || arg === '-u') {
-      result.username = args[++i] || '';
-    } else if (arg === '--password' || arg === '-p') {
-      result.password = args[++i] || '';
+    const lower = arg.toLowerCase();
+    if (
+      lower === '--password' ||
+      lower === '--pass' ||
+      lower === '--passwd' ||
+      lower === '-p' ||
+      lower.startsWith('--password=') ||
+      lower.startsWith('--pass=') ||
+      lower.startsWith('--passwd=') ||
+      lower.startsWith('-p=')
+    ) {
+      throw new Error(
+        'ARGUMENT_REJECTED: Opsi password via argumen CLI (--password / -p) dinonaktifkan demi keamanan. Silakan jalankan skrip tanpa argumen password untuk memasukkan password secara interaktif melalui prompt bertopeng.'
+      );
+    } else if (arg === '--username' || arg === '-u') {
+      if (i + 1 >= args.length || args[i + 1].startsWith('-')) {
+        throw new Error('ARGUMENT_ERROR: Opsi username memerlukan nilai yang valid.');
+      }
+      const val = args[++i].trim();
+      if (!val) {
+        throw new Error('ARGUMENT_ERROR: Nilai username tidak boleh kosong.');
+      }
+      username = val;
+    } else if (arg.startsWith('--username=') || arg.startsWith('-u=')) {
+      const eqIdx = arg.indexOf('=');
+      const val = arg.slice(eqIdx + 1).trim();
+      if (!val) {
+        throw new Error('ARGUMENT_ERROR: Nilai username tidak boleh kosong.');
+      }
+      username = val;
     } else if (arg === '--file' || arg === '-f') {
-      result.outputFile = args[++i] || '';
+      if (i + 1 >= args.length || args[i + 1].startsWith('-')) {
+        throw new Error('ARGUMENT_ERROR: Opsi file memerlukan nilai path yang valid.');
+      }
+      const val = args[++i].trim();
+      if (!val) {
+        throw new Error('ARGUMENT_ERROR: Nilai path file tidak boleh kosong.');
+      }
+      outputFile = val;
+    } else if (arg.startsWith('--file=') || arg.startsWith('-f=')) {
+      const eqIdx = arg.indexOf('=');
+      const val = arg.slice(eqIdx + 1).trim();
+      if (!val) {
+        throw new Error('ARGUMENT_ERROR: Nilai path file tidak boleh kosong.');
+      }
+      outputFile = val;
+    } else if (arg.startsWith('-')) {
+      throw new Error('ARGUMENT_ERROR: Opsi baris perintah tidak dikenal.');
+    } else {
+      throw new Error('ARGUMENT_ERROR: Argumen posisi tidak didukung. Harap gunakan opsi resmi yang diizinkan.');
     }
   }
 
-  return result;
+  return { username, outputFile };
 }
 
 async function main() {
-  const cliArgs = parseCliArgs();
+  let cliArgs;
+  try {
+    cliArgs = parseRecoveryArgs(process.argv.slice(2));
+  } catch (err) {
+    console.error(`\n[ERROR KEAMANAN]: ${err.message}\n`);
+    process.exit(1);
+  }
 
   let username = cliArgs.username;
-  let password = cliArgs.password;
+  let password = '';
 
   if (!username) {
     username = await promptQuestion('Masukkan username Super Admin yang akan dipulihkan: ');

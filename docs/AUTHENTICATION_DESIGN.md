@@ -525,4 +525,55 @@ Untuk mencegah kerentanan pengambilalihan hak akses (*privilege escalation*), si
    );
    ```
 3. **Pemberitahuan Keamanan**:
-   Tabel `users` tidak membatasi akun `role = 'admin'` untuk memiliki `activation_code_id`, sehingga akun admin dapat dibuat secara independen tanpa kode aktivasi.
+   Tabel `users` tidak membatasi akun `role = 'super_admin'` untuk memiliki `activation_code_id`, sehingga akun Super Admin dapat dibuat secara independen tanpa kode aktivasi.
+4. **Proteksi Kredensial CLI**:
+   Skrip `scripts/bootstrap-admin.js` dan `scripts/recover-super-admin.js` secara ketat menolak pemberian password melalui argumen baris perintah (`--pass`, `--password`, `-p`, baik huruf besar/kecil maupun sintaks `=nilai`) guna mencegah terekspos di tabel proses sistem operasi (`ps aux`, Task Manager) dan riwayat shell (`~/.bash_history`).
+   - **Prompt Bertopeng Wajib**: Seluruh input password wajib dimasukkan secara interaktif melalui terminal prompt bertopeng (`*`) dengan konfirmasi ganda (`p1 !== p2`).
+   - **Penegakan Interaktivitas TTY**: Script memeriksa ketersediaan terminal interaktif (`process.stdin.isTTY`). Lingkungan non-interaktif (seperti piping, background process, atau redirect stdin tanpa TTY) langsung ditolak dengan kode kesalahan `TTY_REQUIRED` demi mencegah pembocoran password mentah atau fallback tanpa masking.
+   - **Penghapusan Environment Variable Password**: Dukungan variabel lingkungan seperti `BOOTSTRAP_ADMIN_PASS` dan `ADMIN_PASSWORD` telah dihapus sepenuhnya dari implementasi untuk mengeliminasi risiko pembocoran kredensial melalui dump memori proses, file `.env`, atau log pipeline.
+   - **Penolakan Argumen Posisi & Opsi Kosong**: Parser menolak opsi bernilai kosong (seperti `--user=`, `-u=`, `--username=`, `--file=`) serta menolak argumen posisi asing menggunakan pesan error generik tanpa mencerminkan token input (non-reflection) guna mencegah teks sensitif yang tidak sengaja tertempel tercatat di log terminal.
+
+---
+
+## 10. Checklist & Panduan Mitigasi Login Rate Limiting (Cloudflare WAF / Edge Rules)
+
+### A. Batasan Arsitektur Rate Limiter In-Memory Lokal
+Rate limiter yang terpasang di `worker/security.ts` (`checkLoginRateLimit`) beroperasi secara *in-memory* di dalam isolate V8 instance Worker lokal.
+- **Bukan Rate Limiter Global:** Karena Cloudflare Workers mendistribusikan request ke ratusan PoP (Points of Presence) dan berbagai isolate secara terdistribusi, beberapa request login yang tiba di isolate atau data center berbeda tidak berbagi memori heap.
+- **Peran Aktual:** Proteksi in-memory berfungsi sebagai lapisan pertahanan mendalam (*defense-in-depth*) per isolate lokal untuk menahan loop cepat dari satu koneksi yang sama.
+
+### B. Prasyarat Operasional Sebelum Rilis Publik (Pre-Release Checklist)
+Sebelum domain aplikasi dibuka untuk akses publik, administrator sistem disarankan mengonfigurasi aturan Rate Limiting pada Cloudflare WAF melalui Cloudflare Dashboard.
+
+> [!IMPORTANT]
+> **Status Verifikasi & Belum Aktif:** Konfigurasi aktual Cloudflare WAF dan efektivitas mitigasi edge belum dan tidak dapat diverifikasi secara lokal karena batasan audit *strict read-only* (tanpa akses remote ke akun Cloudflare). Aturan WAF saat ini **belum aktif** di remote, dan efektivitas mitigasinya tidak boleh diasumsikan sebelum dikonfigurasi dan diuji di lingkungan remote.
+> Selain itu, tier paket Cloudflare pada akun proyek belum diverifikasi, sehingga parameter yang dicantumkan di bawah merupakan **rekomendasi awal** yang wajib disesuaikan dengan kapabilitas dashboard dan fitur paket aktual.
+
+### C. Rekomendasi Awal Cloudflare WAF Rate Limiting & Pertimbangan Paket
+1. **Karakteristik Penghitungan & Batasan Konsistensi Edge:**
+   - Counter Cloudflare WAF Rate Limiting dievaluasi pada data center Cloudflare di edge (PoP). Counter dapat terpisah antar-data center, dan aturan rate limiting tidak menjamin konsistensi jumlah request yang presisi secara matematis di seluruh dunia sebelum mitigasi diterapkan (beberapa request tambahan dapat lewat jika didistribusikan ke PoP berbeda).
+2. **Kesesuaian Field Ekspresi Target Rule Menurut Paket:**
+   - Rekomendasi kriteria: URI Path `eq "/api/auth/login"` dan HTTP Method `eq "POST"`.
+   - **Kompatibilitas Field:** Tidak semua paket Cloudflare mendukung kombinasi field ekspresi yang sama pada Rate Limiting Rules. Pada paket Free, field ekspresi yang didukung terbatas (implementasi standar umumnya berfokus pada path URL, tanpa dukungan filter `http.request.method`). Penyaringan berdasarkan method (`http.request.method`) membutuhkan paket yang menyediakan fitur Advanced Rate Limiting atau Ruleset Engine yang lebih tinggi.
+3. **Karakteristik & Ambang Batas Awal Berdasarkan Periode Paket:**
+   - Karakteristik Penghitungan: Berdasarkan IP Pengunjung (`ip.src`).
+   - Pilihan periode jendela penghitungan (*counting period*) bervariasi menurut paket:
+     - **Paket Free:** Jendela periode penghitungan yang tercantum umumnya terbatas pada **10 detik**.
+     - **Paket Pro:** Jendela periode penghitungan tersedia hingga **1 menit** (pilihan 10 detik atau 1 menit).
+     - **Paket Business:** Jendela periode penghitungan tersedia hingga **10 menit** (pilihan 10 detik, 1 menit, atau 10 menit).
+     - **Paket Enterprise:** Menyediakan rentang jendela waktu kustom (detik hingga jam) serta opsi sliding window lanjutan.
+   - Ambang batas percobaan (misalnya 5 request) wajib disesuaikan dengan jendela waktu yang aktif pada paket bersangkutan.
+4. **Tindakan Mitigasi: Perilaku Throttling & Perbedaan Managed Challenge:**
+   - **Pembedaan Managed Challenge vs Turnstile:** `Managed Challenge` adalah tindakan mitigasi layer edge di Cloudflare WAF yang secara adaptif memilih jenis tantangan (seperti tantangan non-interaktif JavaScript atau challenge interaktif) berdasarkan tingkat kecurigaan traffic. Ini berbeda dari *Cloudflare Turnstile*, yang merupakan produk widget CAPTCHA replacement mandiri yang diintegrasikan langsung pada kode antarmuka/frontend web.
+   - **Perilaku Throttling Paket Free/Pro/Business vs Enterprise:** Pada paket Free, Pro, dan Business, tindakan challenge menerapkan perilaku *throttling* khusus: request yang melampaui ambang batas akan disajikan challenge untuk memverifikasi pengunjung sah sebelum diizinkan meneruskan request, bukan selalu menerapkan durasi mitigasi statis yang dapat ditentukan bebas oleh pengguna. Paket Enterprise menyediakan opsi durasi mitigasi kustom serta respons khusus lanjutan.
+   - **Batasan Efektivitas:** Tindakan `Managed Challenge` **tidak menjamin otomatis memblokir seluruh bot atau brute-force** (bot tingkat lanjut yang menggunakan solver headless atau layanan CAPTCHA solving terdistribusi berpotensi melewati verifikasi), namun secara signifikan menaikkan biaya dan hambatan serangan (*friction*) dibandingkan endpoint tanpa proteksi edge.
+   - **Fingerprint JA3/JA4:** Pemanfaatan karakteristik sidik jari TLS (`JA3` / `JA4` seperti `cf.bot_management.ja4`) hanya tersedia pada fitur Cloudflare Bot Management atau paket Enterprise dengan Advanced Rate Limiting, dan tidak tersedia secara umum pada paket Free, Pro, maupun Business standar.
+
+### D. Perbandingan Opsi Arsitektur untuk Rate Limiting Terdistribusi
+
+| Opsi Solusi | Karakteristik Konsistensi State | Dampak Latensi | Ketersediaan & Kompleksitas | Evaluasi & Catatan Operasional |
+|---|---|---|---|---|
+| **Cloudflare Edge WAF (Rekomendasi Awal)** | Terdistribusi per Edge PoP (tidak sinkron global seketika antar-data center) | Sangat rendah di Edge (request disaring sebelum mencapai Worker ketika aturan cocok dan mitigasi berlaku) | Bergantung paket Cloudflare (kuota rules dan opsi konfigurasi bervariasi; belum diverifikasi pada akun ini) | **Rekomendasi Lapis Pertama**. Efektif menyaring volumetrik brute-force sebelum membebani Worker/D1, dengan memahami keterbatasan konsistensi per-PoP. |
+| **Cloudflare Workers KV** | Eventual Consistency (propagasi asinkron antar edge, jeda pembaruan hingga puluhan detik) | Rendah untuk pembacaan edge; penulisan memerlukan waktu propagasi | Tersedia di runtime Workers standar; mengonsumsi kuota operasi tulis | Kurang ideal untuk rate limiting presisi karena delay propagasi memungkinkan lonjakan request lolos secara serentak. |
+| **Cloudflare Durable Objects** | Strong Consistency (single-actor koordinator dengan jaminan urutan terpusat) | Menengah (request dirutekan ke lokasi PoP instance Durable Object yang bersangkutan) | Memerlukan Workers Paid dan penulisan arsitektur koordinasi khusus | Memungkinkan koordinasi state yang konsisten pada objek yang sama, dengan akurasi rate limiting bergantung pada desain implementasi, namun menambah kompleksitas kode, latensi rute, dan dependensi biaya. |
+| **Cloudflare D1 Database Counter** | Strong Consistency (ACID berbasis transaksi SQLite) | Tinggi (setiap percobaan login memicu transaksi tulis ke basis data) | Memanfaatkan resource D1 yang sudah ada; menguras kuota row write D1 | **Tidak Direkomendasikan**. Menimbulkan risiko bottleneck I/O pada basis data transaksional aplikasi saat diserang brute-force massal. |

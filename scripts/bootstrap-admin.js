@@ -4,10 +4,10 @@
  * Utilitas bootstrap CLI untuk menginisialisasi administrator pertama Gudang Video Shopee.
  *
  * FITUR KEAMANAN:
- * 1. Bebas dari kredensial hardcoded (menggunakan environment variables, input interaktif tersembunyi, atau argumen CLI).
- * 2. Proteksi Process List & History: Mendukung input password interaktif bertopeng (*) sehingga tidak
- *    tercatat di riwayat shell atau daftar proses OS (`ps`/Task Manager).
- * 3. Idempotent & Anti-Takeover: Menggunakan klausul `WHERE NOT EXISTS (SELECT 1 FROM users WHERE role = 'admin')`
+ * 1. Bebas dari kredensial hardcoded (menggunakan input interaktif tersembunyi).
+ * 2. Proteksi Kredensial Maksimal: Password diwajibkan melalui prompt bertopeng (*) dengan konfirmasi ganda.
+ *    Opsi argumen CLI (--pass/-p) dan environment variable password ditiadakan demi mencegah kebocoran.
+ * 3. Idempotent & Anti-Takeover: Menggunakan klausul WHERE NOT EXISTS (SELECT 1 FROM users WHERE role = 'admin')
  *    sehingga tidak dapat dieksekusi ulang untuk merebut kendali sistem yang sudah memiliki admin.
  * 4. Algoritma identik dengan aplikasi: PBKDF2-HMAC-SHA512 (10.000 iterasi), salt 16-byte CSPRNG,
  *    dan format versi modular crypt ($pbkdf2-sha512$v=1$i=10000$...).
@@ -93,103 +93,158 @@ export async function generateBootstrapAdminSql(username, password) {
   };
 }
 
-function promptHiddenPassword(questionText) {
-  return new Promise((resolve) => {
+export function promptHiddenPassword(questionText) {
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    if (!stdin.isTTY) {
+      reject(new Error('TTY_REQUIRED: Operasi ini memerlukan terminal TTY interaktif untuk memasukkan password secara aman dengan proteksi masking. Lingkungan non-interaktif ditolak demi mencegah kebocoran kredensial.'));
+      return;
+    }
+
     const rl = readline.createInterface({
-      input: process.stdin,
+      input: stdin,
       output: process.stderr
     });
 
-    const stdin = process.stdin;
     process.stderr.write(questionText);
 
-    if (stdin.isTTY) {
-      stdin.setRawMode(true);
-      stdin.resume();
-      let inputVal = '';
-      const onData = (chunk) => {
-        const str = chunk.toString('utf8');
-        for (let i = 0; i < str.length; i++) {
-          const c = str[i];
-          if (c === '\n' || c === '\r' || c === '\u0004') {
-            stdin.setRawMode(false);
-            stdin.pause();
-            stdin.removeListener('data', onData);
-            process.stderr.write('\n');
-            rl.close();
-            resolve(inputVal);
-            return;
-          } else if (c === '\u0003') {
-            // Ctrl+C
-            stdin.setRawMode(false);
-            process.exit(130);
-          } else if (c === '\u0008' || c === '\x7f') {
-            // Backspace
-            if (inputVal.length > 0) {
-              inputVal = inputVal.slice(0, -1);
-              process.stderr.write('\b \b');
-            }
-          } else {
-            inputVal += c;
-            process.stderr.write('*');
+    stdin.setRawMode(true);
+    stdin.resume();
+    let inputVal = '';
+    const onData = (chunk) => {
+      const str = chunk.toString('utf8');
+      for (let i = 0; i < str.length; i++) {
+        const c = str[i];
+        if (c === '\n' || c === '\r' || c === '\u0004') {
+          stdin.setRawMode(false);
+          stdin.pause();
+          stdin.removeListener('data', onData);
+          process.stderr.write('\n');
+          rl.close();
+          resolve(inputVal);
+          return;
+        } else if (c === '\u0003') {
+          // Ctrl+C
+          stdin.setRawMode(false);
+          process.exit(130);
+        } else if (c === '\u0008' || c === '\x7f') {
+          // Backspace
+          if (inputVal.length > 0) {
+            inputVal = inputVal.slice(0, -1);
+            process.stderr.write('\b \b');
           }
+        } else {
+          inputVal += c;
+          process.stderr.write('*');
         }
-      };
-      stdin.on('data', onData);
-    } else {
-      rl.question('', (ans) => {
-        rl.close();
-        resolve(ans);
-      });
-    }
+      }
+    };
+    stdin.on('data', onData);
   });
 }
 
-function promptLine(questionText) {
-  return new Promise((resolve) => {
+export function promptLine(questionText) {
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    if (!stdin.isTTY) {
+      reject(new Error('TTY_REQUIRED: Masukkan nilai via argumen resmi di lingkungan non-interaktif, atau jalankan di terminal interaktif.'));
+      return;
+    }
     const rl = readline.createInterface({
-      input: process.stdin,
+      input: stdin,
       output: process.stderr
     });
     rl.question(questionText, (ans) => {
       rl.close();
-      resolve(ans);
+      resolve(ans.trim());
     });
   });
 }
 
-async function main() {
-  const args = process.argv.slice(2);
+/**
+ * Memvalidasi dan mengurai argumen baris perintah untuk bootstrap.
+ * Opsi password via CLI argument (--pass / -p) ditolak secara eksplisit
+ * demi mencegah kebocoran password pada daftar proses OS dan shell history.
+ */
+export function parseBootstrapArgs(args = []) {
   let username = process.env.BOOTSTRAP_ADMIN_USER || process.env.ADMIN_USERNAME || '';
-  let password = process.env.BOOTSTRAP_ADMIN_PASS || process.env.ADMIN_PASSWORD || '';
+  if (username && !username.trim()) {
+    username = '';
+  }
   let generateSqlOnly = false;
-  let usedCliFlagPass = false;
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--user' && args[i + 1]) {
-      username = args[++i];
-    } else if (args[i] === '--pass' && args[i + 1]) {
-      password = args[++i];
-      usedCliFlagPass = true;
-    } else if (args[i] === '--sql-only') {
+    const arg = args[i];
+    const lower = arg.toLowerCase();
+    if (
+      lower === '--pass' ||
+      lower === '-p' ||
+      lower === '--password' ||
+      lower === '--passwd' ||
+      lower.startsWith('--pass=') ||
+      lower.startsWith('-p=') ||
+      lower.startsWith('--password=') ||
+      lower.startsWith('--passwd=')
+    ) {
+      throw new Error(
+        'ARGUMENT_REJECTED: Opsi password via argumen CLI dinonaktifkan demi keamanan. ' +
+        'Silakan jalankan skrip tanpa opsi password untuk memasukkan password secara interaktif melalui prompt bertopeng.'
+      );
+    } else if (arg === '--user' || arg === '-u') {
+      if (i + 1 >= args.length || args[i + 1].startsWith('-')) {
+        throw new Error('ARGUMENT_ERROR: Opsi username memerlukan nilai yang valid.');
+      }
+      const val = args[++i].trim();
+      if (!val) {
+        throw new Error('ARGUMENT_ERROR: Nilai username tidak boleh kosong.');
+      }
+      username = val;
+    } else if (arg.startsWith('--user=') || arg.startsWith('-u=')) {
+      const eqIdx = arg.indexOf('=');
+      const val = arg.slice(eqIdx + 1).trim();
+      if (!val) {
+        throw new Error('ARGUMENT_ERROR: Nilai username tidak boleh kosong.');
+      }
+      username = val;
+    } else if (arg === '--sql-only') {
       generateSqlOnly = true;
+    } else if (arg.startsWith('-')) {
+      throw new Error('ARGUMENT_ERROR: Opsi baris perintah tidak dikenal.');
+    } else {
+      throw new Error('ARGUMENT_ERROR: Argumen posisi tidak didukung. Harap gunakan opsi resmi yang diizinkan.');
     }
   }
 
-  if (usedCliFlagPass) {
-    console.warn('\n[PERINGATAN KEAMANAN]: Mengirimkan password via argumen CLI (--pass)');
-    console.warn('berisiko terekspos pada daftar proses OS (ps/Task Manager) dan riwayat shell.');
-    console.warn('Disarankan menggunakan prompt interaktif atau environment variable BOOTSTRAP_ADMIN_PASS / ADMIN_PASSWORD.\n');
+  return { username, generateSqlOnly };
+}
+
+async function main() {
+  let cliOptions;
+  try {
+    cliOptions = parseBootstrapArgs(process.argv.slice(2));
+  } catch (err) {
+    console.error(`\n[ERROR KEAMANAN]: ${err.message}\n`);
+    process.exit(1);
   }
+
+  let username = cliOptions.username;
+  let password = '';
+  const generateSqlOnly = cliOptions.generateSqlOnly;
 
   // Jika username belum disediakan, tanyakan interaktif
   if (!username && process.stdin.isTTY) {
     username = await promptLine('Masukkan Username Admin: ');
   }
 
-  // Jika password belum disediakan, tanyakan interaktif bertopeng
-  if (!password && process.stdin.isTTY) {
-    password = await promptHiddenPassword('Masukkan Password Admin (karakter akan disembunyikan): ');
+  // Password wajib dimasukkan secara interaktif bertopeng dengan konfirmasi ganda
+  if (!password) {
+    const p1 = await promptHiddenPassword('Masukkan Password Admin (karakter akan disembunyikan): ');
+    const p2 = await promptHiddenPassword('Konfirmasi Password Admin: ');
+    if (p1 !== p2) {
+      console.error('\n[ERROR KEAMANAN]: Password konfirmasi tidak cocok.');
+      process.exit(1);
+    }
+    password = p1;
   }
 
   if (!username || !password) {
@@ -198,13 +253,11 @@ async function main() {
     console.error('================================================================');
     console.error('Penggunaan interaktif aman:');
     console.error('  node scripts/bootstrap-admin.js');
-    console.error('  (Akan meminta input username dan password bertopeng secara interaktif)');
-    console.error('\nAtau via Environment Variables:');
-    console.error('  BOOTSTRAP_ADMIN_USER=admin BOOTSTRAP_ADMIN_PASS=rahasia node scripts/bootstrap-admin.js');
-    console.error('\nOpsi flag CLI:');
-    console.error('  --user <username>   Tentukan username');
-    console.error('  --pass <password>   Tentukan password langsung (tidak disarankan untuk shell publik)');
-    console.error('  --sql-only          Hanya cetak query SQL aman untuk di-pipe ke file / Wrangler D1');
+    console.error('  (Akan meminta input username dan password bertopeng secara interaktif dengan konfirmasi)');
+    console.error('\nOpsi flag CLI yang diizinkan:');
+    console.error('  --user, -u <username>   Tentukan username');
+    console.error('  --sql-only              Hanya cetak query SQL aman untuk di-pipe ke file / Wrangler D1');
+    console.error('\nCatatan Keamanan: Opsi password via CLI (--pass) maupun environment variable sengaja ditiadakan demi mencegah kebocoran kredensial.');
     process.exit(1);
   }
 

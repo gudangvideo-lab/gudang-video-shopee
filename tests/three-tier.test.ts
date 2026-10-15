@@ -11,7 +11,7 @@ import {
 } from './setup-test-db';
 import { hashPassword, sha256 } from '../worker/crypto';
 import { DEVICE_COOKIE_NAME, SESSION_COOKIE_NAME } from '../worker/cookies';
-import { generateRecoverySuperAdminSql } from '../scripts/recover-super-admin.js';
+import { generateRecoverySuperAdminSql, parseRecoveryArgs, promptHiddenPassword } from '../scripts/recover-super-admin.js';
 import { Miniflare } from 'miniflare';
 
 declare function require(name: string): any;
@@ -712,6 +712,82 @@ describe('Sistem Hak Akses Tiga Level: Super Admin, Admin, dan Member', () => {
       const updateResult = await ctx.db.prepare(hackAttemptSql.sqlStatements[0]).run();
       // UPDATE users WHERE username = 'regular_admin_recover' AND role = 'super_admin' -> meta.changes = 0
       expect(updateResult.meta.changes).toBe(0);
+    });
+
+    it('parseRecoveryArgs menolak opsi password CLI (--password, --pass, -p, dan variasinya) demi keamanan', () => {
+      expect(() => parseRecoveryArgs(['--password', 'secret123'])).toThrow('ARGUMENT_REJECTED');
+      expect(() => parseRecoveryArgs(['--pass', 'secret123'])).toThrow('ARGUMENT_REJECTED');
+      expect(() => parseRecoveryArgs(['--passwd', 'secret123'])).toThrow('ARGUMENT_REJECTED');
+      expect(() => parseRecoveryArgs(['-p', 'secret123'])).toThrow('ARGUMENT_REJECTED');
+      expect(() => parseRecoveryArgs(['--PASSWORD', 'secret123'])).toThrow('ARGUMENT_REJECTED');
+      expect(() => parseRecoveryArgs(['-P', 'secret123'])).toThrow('ARGUMENT_REJECTED');
+      expect(() => parseRecoveryArgs(['--password=secret123'])).toThrow('ARGUMENT_REJECTED');
+      expect(() => parseRecoveryArgs(['--pass=secret123'])).toThrow('ARGUMENT_REJECTED');
+      expect(() => parseRecoveryArgs(['-p=secret123'])).toThrow('ARGUMENT_REJECTED');
+    });
+
+    it('parseRecoveryArgs menolak opsi dengan argumen yang kurang atau bernilai kosong', () => {
+      expect(() => parseRecoveryArgs(['--username'])).toThrow('ARGUMENT_ERROR');
+      expect(() => parseRecoveryArgs(['-u'])).toThrow('ARGUMENT_ERROR');
+      expect(() => parseRecoveryArgs(['--username='])).toThrow('ARGUMENT_ERROR');
+      expect(() => parseRecoveryArgs(['-u='])).toThrow('ARGUMENT_ERROR');
+      expect(() => parseRecoveryArgs(['--username', '   '])).toThrow('ARGUMENT_ERROR');
+      expect(() => parseRecoveryArgs(['-u', '   '])).toThrow('ARGUMENT_ERROR');
+
+      expect(() => parseRecoveryArgs(['--file'])).toThrow('ARGUMENT_ERROR');
+      expect(() => parseRecoveryArgs(['-f'])).toThrow('ARGUMENT_ERROR');
+      expect(() => parseRecoveryArgs(['--file='])).toThrow('ARGUMENT_ERROR');
+      expect(() => parseRecoveryArgs(['-f='])).toThrow('ARGUMENT_ERROR');
+      expect(() => parseRecoveryArgs(['--file', '   '])).toThrow('ARGUMENT_ERROR');
+      expect(() => parseRecoveryArgs(['-f', '   '])).toThrow('ARGUMENT_ERROR');
+    });
+
+    it('parseRecoveryArgs menolak argumen posisi dan opsi asing tanpa membocorkan nilai sensitif', () => {
+      // Argumen posisi asing ditolak
+      expect(() => parseRecoveryArgs(['unexpected_positional_value'])).toThrow('ARGUMENT_ERROR');
+      expect(() => parseRecoveryArgs(['--username', 'admin', 'extra_arg'])).toThrow('ARGUMENT_ERROR');
+
+      // Pastikan pesan error tidak merefleksikan kembali teks sensitif yang tidak sengaja diketik
+      const sensitiveToken = 'superSecretSensitiveText123';
+      try {
+        parseRecoveryArgs([`--${sensitiveToken}`]);
+        expect.unreachable();
+      } catch (err: any) {
+        expect(err.message).toContain('ARGUMENT_ERROR');
+        expect(err.message).not.toContain(sensitiveToken);
+      }
+
+      try {
+        parseRecoveryArgs([sensitiveToken]);
+        expect.unreachable();
+      } catch (err: any) {
+        expect(err.message).toContain('ARGUMENT_ERROR');
+        expect(err.message).not.toContain(sensitiveToken);
+      }
+    });
+
+    it('promptHiddenPassword menolak eksekusi pada lingkungan stdin non-interaktif (non-TTY)', async () => {
+      if (!process.stdin.isTTY) {
+        await expect(promptHiddenPassword('Test: ')).rejects.toThrow('TTY_REQUIRED');
+      }
+    });
+
+    it('parseRecoveryArgs menerima opsi aman --username, -u, --file, dan -f', () => {
+      const opts = parseRecoveryArgs(['--username', 'superadmin_1', '--file', 'out.sql']);
+      expect(opts.username).toBe('superadmin_1');
+      expect(opts.outputFile).toBe('out.sql');
+
+      const optsShort = parseRecoveryArgs(['-u', 'superadmin_2', '-f', 'out2.sql']);
+      expect(optsShort.username).toBe('superadmin_2');
+      expect(optsShort.outputFile).toBe('out2.sql');
+
+      const optsEq = parseRecoveryArgs(['--username=superadmin_3', '--file=out3.sql']);
+      expect(optsEq.username).toBe('superadmin_3');
+      expect(optsEq.outputFile).toBe('out3.sql');
+
+      const optsEqShort = parseRecoveryArgs(['-u=superadmin_4', '-f=out4.sql']);
+      expect(optsEqShort.username).toBe('superadmin_4');
+      expect(optsEqShort.outputFile).toBe('out4.sql');
     });
   });
 });

@@ -14,3 +14,11 @@ export function generateBootstrapAdminSql(
   sqlStatements: string[];
   fullSql: string;
 }>;
+
+export function parseBootstrapArgs(args?: string[]): {
+  username: string;
+  generateSqlOnly: boolean;
+};
+
+export function promptHiddenPassword(questionText: string): Promise<string>;
+export function promptLine(questionText: string): Promise<string>;

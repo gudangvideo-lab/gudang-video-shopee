@@ -13,7 +13,9 @@ import {
   MIN_PBKDF2_ITERATIONS,
   MAX_PBKDF2_ITERATIONS
 } from '../worker/crypto';
-import { generateBootstrapAdminSql } from '../scripts/bootstrap-admin';
+import { generateBootstrapAdminSql, parseBootstrapArgs, promptHiddenPassword } from '../scripts/bootstrap-admin';
+
+declare const process: any;
 
 // Helper helper untuk parsing JSON ber-type
 async function getJson(res: Response): Promise<any> {
@@ -1357,6 +1359,75 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
     it('validasi input bootstrap menolak username pendek atau password di bawah 8 karakter', async () => {
       await expect(generateBootstrapAdminSql('ab', 'ValidPass123!')).rejects.toThrow('Username');
       await expect(generateBootstrapAdminSql('valid_user', 'short')).rejects.toThrow('Password');
+    });
+
+    it('parseBootstrapArgs menolak opsi --pass, -p, dan seluruh variasinya demi keamanan', () => {
+      expect(() => parseBootstrapArgs(['--pass', 'secret123'])).toThrow('ARGUMENT_REJECTED');
+      expect(() => parseBootstrapArgs(['-p', 'secret123'])).toThrow('ARGUMENT_REJECTED');
+      expect(() => parseBootstrapArgs(['--password', 'secret123'])).toThrow('ARGUMENT_REJECTED');
+      expect(() => parseBootstrapArgs(['--passwd', 'secret123'])).toThrow('ARGUMENT_REJECTED');
+      expect(() => parseBootstrapArgs(['--PASS', 'secret123'])).toThrow('ARGUMENT_REJECTED');
+      expect(() => parseBootstrapArgs(['-P', 'secret123'])).toThrow('ARGUMENT_REJECTED');
+      expect(() => parseBootstrapArgs(['--pass=secret123'])).toThrow('ARGUMENT_REJECTED');
+      expect(() => parseBootstrapArgs(['-p=secret123'])).toThrow('ARGUMENT_REJECTED');
+      expect(() => parseBootstrapArgs(['--password=secret123'])).toThrow('ARGUMENT_REJECTED');
+      expect(() => parseBootstrapArgs(['--PASS=secret123'])).toThrow('ARGUMENT_REJECTED');
+    });
+
+    it('parseBootstrapArgs menolak opsi dengan argumen yang kurang, bernilai kosong, atau opsi tidak dikenal', () => {
+      expect(() => parseBootstrapArgs(['--user'])).toThrow('ARGUMENT_ERROR');
+      expect(() => parseBootstrapArgs(['-u'])).toThrow('ARGUMENT_ERROR');
+      expect(() => parseBootstrapArgs(['--user='])).toThrow('ARGUMENT_ERROR');
+      expect(() => parseBootstrapArgs(['-u='])).toThrow('ARGUMENT_ERROR');
+      expect(() => parseBootstrapArgs(['--user', '   '])).toThrow('ARGUMENT_ERROR');
+      expect(() => parseBootstrapArgs(['-u', '   '])).toThrow('ARGUMENT_ERROR');
+    });
+
+    it('parseBootstrapArgs menolak argumen posisi dan opsi asing tanpa membocorkan nilai sensitif', () => {
+      // Argumen posisi asing ditolak
+      expect(() => parseBootstrapArgs(['unexpected_positional_value'])).toThrow('ARGUMENT_ERROR');
+      expect(() => parseBootstrapArgs(['--sql-only', 'extra_arg'])).toThrow('ARGUMENT_ERROR');
+
+      // Pastikan pesan error tidak merefleksikan kembali teks sensitif yang tidak sengaja diketik
+      const sensitiveToken = 'superSecretSensitiveText123';
+      try {
+        parseBootstrapArgs([`--${sensitiveToken}`]);
+        expect.unreachable();
+      } catch (err: any) {
+        expect(err.message).toContain('ARGUMENT_ERROR');
+        expect(err.message).not.toContain(sensitiveToken);
+      }
+
+      try {
+        parseBootstrapArgs([sensitiveToken]);
+        expect.unreachable();
+      } catch (err: any) {
+        expect(err.message).toContain('ARGUMENT_ERROR');
+        expect(err.message).not.toContain(sensitiveToken);
+      }
+    });
+
+    it('promptHiddenPassword menolak eksekusi pada lingkungan stdin non-interaktif (non-TTY)', async () => {
+      // Dalam vitest runner lingkungan non-TTY, promptHiddenPassword wajib menolak TTY_REQUIRED
+      if (!process.stdin.isTTY) {
+        await expect(promptHiddenPassword('Test: ')).rejects.toThrow('TTY_REQUIRED');
+      }
+    });
+
+    it('parseBootstrapArgs menerima opsi aman --user, -u, dan --sql-only', () => {
+      const opts = parseBootstrapArgs(['--user', 'custom_admin', '--sql-only']);
+      expect(opts.username).toBe('custom_admin');
+      expect(opts.generateSqlOnly).toBe(true);
+
+      const optsShort = parseBootstrapArgs(['-u', 'short_admin']);
+      expect(optsShort.username).toBe('short_admin');
+
+      const optsEq = parseBootstrapArgs(['--user=admin_equal']);
+      expect(optsEq.username).toBe('admin_equal');
+      expect(optsEq.generateSqlOnly).toBe(false);
+
+      const optsEqShort = parseBootstrapArgs(['-u=admin_short_eq']);
+      expect(optsEqShort.username).toBe('admin_short_eq');
     });
   });
 

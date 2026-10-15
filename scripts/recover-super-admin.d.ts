@@ -13,3 +13,11 @@ export function generateRecoverySuperAdminSql(
   sqlStatements: string[];
   fullSql: string;
 }>;
+
+export function parseRecoveryArgs(args?: string[]): {
+  username: string;
+  outputFile: string;
+};
+
+export function promptHiddenPassword(questionText: string): Promise<string>;
+export function promptQuestion(questionText: string): Promise<string>;
