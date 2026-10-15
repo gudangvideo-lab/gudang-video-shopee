@@ -10,3 +10,11 @@ coverage/
 .DS_Store
 Thumbs.db
 *.log
+*.tsbuildinfo
+bootstrap*.sql
+*.tmp.sql
+backups/
+*.sqlite
+*.sqlite3
+*.db
+*.dump

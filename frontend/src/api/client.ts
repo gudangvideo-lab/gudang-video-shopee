@@ -1,0 +1,387 @@
+/**
+ * frontend/src/api/client.ts
+ * Klien HTTP terpusat untuk berinteraksi dengan API backend Cloudflare Worker.
+ *
+ * Kebijakan Keamanan:
+ * 1. Menggunakan `credentials: 'same-origin'` untuk seluruh request, sehingga
+ *    cookie HttpOnly (__Host-gvs_device dan __Host-gvs_session) dikelola otomatis oleh browser.
+ * 2. Tidak ada token yang disimpan di localStorage, sessionStorage, atau IndexedDB.
+ * 3. Menangani penolakan perangkat (DEVICE_NOT_AUTHORIZED) dan otorisasi dengan tipe terstruktur.
+ */
+
+import {
+  MeResponse,
+  LoginPayload,
+  ActivatePayload,
+  ResetDevicePayload,
+  AuthSuccessResponse,
+  ListActivationCodesResponse,
+  CreateActivationCodePayload,
+  CreateActivationCodeResponse,
+  ListUsersResponse,
+  IssueResetCodePayload,
+  IssueResetCodeResponse,
+  ListAuditLogsResponse,
+  ApiErrorResponse,
+  VideoItem,
+  AdminVideoItem,
+  ListVideosResponse,
+  ListAdminVideosResponse,
+  UploadVideoPayload,
+  UpdateVideoPayload,
+  CreateAdminPayload,
+  CreateAdminResponse,
+  UpdateAdminStatusPayload,
+  UpdateAdminStatusResponse,
+  ListAdminsResponse,
+  CreateMemberPayload,
+  CreateMemberResponse,
+  ListShopeeRequestsResponse,
+  SubmitShopeeRequestPayload,
+  ReviewShopeeRequestPayload,
+  ShopeeAccountRequest
+} from './types';
+
+export class ApiClientError extends Error {
+  public status: number;
+  public errorCode: string;
+
+  constructor(status: number, errorCode: string, message: string) {
+    super(message);
+    this.name = 'ApiClientError';
+    this.status = status;
+    this.errorCode = errorCode;
+  }
+}
+
+async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const headers = new Headers(options.headers || {});
+
+  if (options.body && !(options.body instanceof FormData) && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  // Wajib same-origin untuk keamanan cookie HttpOnly dan pencegahan CSRF
+  const config: RequestInit = {
+    ...options,
+    headers,
+    credentials: 'same-origin'
+  };
+
+  let response: Response;
+  try {
+    response = await fetch(endpoint, config);
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Koneksi jaringan terputus';
+    throw new ApiClientError(0, 'NETWORK_ERROR', `Gagal menghubungi server: ${errorMsg}`);
+  }
+
+  // Tangani respons kosong
+  const contentType = response.headers.get('Content-Type') || '';
+  const isJson = contentType.includes('application/json');
+
+  if (!response.ok) {
+    if (isJson) {
+      try {
+        const errorData = (await response.json()) as ApiErrorResponse;
+        throw new ApiClientError(
+          response.status,
+          errorData.error || 'SERVER_ERROR',
+          errorData.message || `Permintaan gagal dengan status ${response.status}`
+        );
+      } catch (e) {
+        if (e instanceof ApiClientError) throw e;
+      }
+    }
+    throw new ApiClientError(
+      response.status,
+      'HTTP_ERROR',
+      `Permintaan gagal dengan status HTTP ${response.status}`
+    );
+  }
+
+  if (isJson) {
+    return (await response.json()) as T;
+  }
+
+  return (await response.text()) as unknown as T;
+}
+
+export const authApi = {
+  /**
+   * Mengambil data profil dan sesi pengguna yang sedang aktif (GET /api/auth/me)
+   */
+  async getMe(): Promise<MeResponse> {
+    return request<MeResponse>('/api/auth/me', { method: 'GET' });
+  },
+
+  /**
+   * Login dengan username dan password (POST /api/auth/login)
+   * Memerlukan browser yang telah memiliki cookie perangkat terikat.
+   */
+  async login(payload: LoginPayload): Promise<AuthSuccessResponse> {
+    return request<AuthSuccessResponse>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  /**
+   * Aktivasi akun pertama kali dengan kode aktivasi sekali pakai (POST /api/auth/activate)
+   */
+  async activate(payload: ActivatePayload): Promise<AuthSuccessResponse> {
+    return request<AuthSuccessResponse>('/api/auth/activate', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  /**
+   * Reset ikatan perangkat menggunakan kode reset yang diterbitkan admin (POST /api/auth/reset-device)
+   */
+  async resetDevice(payload: ResetDevicePayload): Promise<AuthSuccessResponse> {
+    return request<AuthSuccessResponse>('/api/auth/reset-device', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  /**
+   * Logout dan mencabut sesi saat ini (POST /api/auth/logout)
+   */
+  async logout(): Promise<{ status: string; message: string }> {
+    return request<{ status: string; message: string }>('/api/auth/logout', {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+  }
+};
+
+export const adminApi = {
+  /**
+   * Mengambil daftar kode aktivasi (GET /api/admin/activation-codes)
+   */
+  async listActivationCodes(): Promise<ListActivationCodesResponse> {
+    return request<ListActivationCodesResponse>('/api/admin/activation-codes', {
+      method: 'GET'
+    });
+  },
+
+  /**
+   * Membuat kode aktivasi sekali pakai baru (POST /api/admin/activation-codes)
+   */
+  async createActivationCode(payload: CreateActivationCodePayload): Promise<CreateActivationCodeResponse> {
+    return request<CreateActivationCodeResponse>('/api/admin/activation-codes', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  /**
+   * Mengambil daftar seluruh pengguna terdaftar (GET /api/admin/users)
+   */
+  async listUsers(): Promise<ListUsersResponse> {
+    return request<ListUsersResponse>('/api/admin/users', {
+      method: 'GET'
+    });
+  },
+
+  /**
+   * Menerbitkan kode reset perangkat untuk pengguna tertentu (POST /api/admin/users/:id/reset-code)
+   */
+  async issueResetCode(userId: string, payload: IssueResetCodePayload): Promise<IssueResetCodeResponse> {
+    return request<IssueResetCodeResponse>(`/api/admin/users/${encodeURIComponent(userId)}/reset-code`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  /**
+   * Mengambil rekaman log audit keamanan (GET /api/admin/audit-logs)
+   */
+  async listAuditLogs(): Promise<ListAuditLogsResponse> {
+    return request<ListAuditLogsResponse>('/api/admin/audit-logs', {
+      method: 'GET'
+    });
+  },
+
+  /**
+   * Mengambil daftar seluruh video (aktif dan nonaktif) untuk admin (GET /api/admin/videos)
+   */
+  async listVideos(): Promise<ListAdminVideosResponse> {
+    return request<ListAdminVideosResponse>('/api/admin/videos', {
+      method: 'GET'
+    });
+  },
+
+  /**
+   * Mengunggah file video baru beserta metadata (POST /api/admin/videos)
+   */
+  async uploadVideo(payload: UploadVideoPayload): Promise<{ status: string; message: string; video: VideoItem }> {
+    const formData = new FormData();
+    formData.append('file', payload.file);
+    formData.append('title', payload.title);
+    formData.append('product_name', payload.product_name);
+    formData.append('product_url', payload.product_url);
+    if (payload.description) {
+      formData.append('description', payload.description);
+    }
+    if (payload.status) {
+      formData.append('status', payload.status);
+    }
+    return request<{ status: string; message: string; video: VideoItem }>('/api/admin/videos', {
+      method: 'POST',
+      body: formData
+    });
+  },
+
+  /**
+   * Memperbarui metadata video (PUT /api/admin/videos/:id)
+   */
+  async updateVideo(
+    id: string,
+    payload: UpdateVideoPayload
+  ): Promise<{ status: string; message: string; video: AdminVideoItem }> {
+    return request<{ status: string; message: string; video: AdminVideoItem }>(
+      `/api/admin/videos/${encodeURIComponent(id)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      }
+    );
+  },
+
+  /**
+   * Menghapus file video dari R2 dan metadata dari D1 (DELETE /api/admin/videos/:id)
+   */
+  async deleteVideo(id: string): Promise<{ status: string; message: string }> {
+    return request<{ status: string; message: string }>(`/api/admin/videos/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    });
+  }
+};
+
+export const superAdminApi = {
+  /**
+   * Mengambil daftar seluruh administrator (GET /api/super-admin/admins)
+   */
+  async listAdmins(): Promise<ListAdminsResponse> {
+    return request<ListAdminsResponse>('/api/super-admin/admins', {
+      method: 'GET'
+    });
+  },
+
+  /**
+   * Membuat akun Administrator baru (POST /api/super-admin/admins)
+   */
+  async createAdmin(payload: CreateAdminPayload): Promise<CreateAdminResponse> {
+    return request<CreateAdminResponse>('/api/super-admin/admins', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  /**
+   * Mengubah status Administrator aktif/nonaktif (PATCH /api/super-admin/admins/:id/status)
+   */
+  async updateAdminStatus(
+    id: string,
+    payload: UpdateAdminStatusPayload
+  ): Promise<UpdateAdminStatusResponse> {
+    return request<UpdateAdminStatusResponse>(
+      `/api/super-admin/admins/${encodeURIComponent(id)}/status`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      }
+    );
+  },
+
+  /**
+   * Membuat akun Member langsung tanpa kode aktivasi (POST /api/super-admin/members)
+   */
+  async createMember(payload: CreateMemberPayload): Promise<CreateMemberResponse> {
+    return request<CreateMemberResponse>('/api/super-admin/members', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  }
+};
+
+export const videoApi = {
+  /**
+   * Mengambil daftar katalog video aktif untuk member (GET /api/videos)
+   */
+  async listVideos(): Promise<ListVideosResponse> {
+    return request<ListVideosResponse>('/api/videos', {
+      method: 'GET'
+    });
+  },
+
+  /**
+   * Mengambil detail video aktif (GET /api/videos/:id)
+   */
+  async getVideo(id: string): Promise<{ status: string; video: VideoItem }> {
+    return request<{ status: string; video: VideoItem }>(`/api/videos/${encodeURIComponent(id)}`, {
+      method: 'GET'
+    });
+  },
+
+  /**
+   * Mendapatkan endpoint streaming unduhan video
+   */
+  getDownloadUrl(id: string): string {
+    return `/api/videos/${encodeURIComponent(id)}/download`;
+  }
+};
+
+export const shopeeApi = {
+  /**
+   * Pendaftaran tautan Shopee awal bagi member lama / dibuat langsung (POST /api/member/shopee-account/initial)
+   */
+  async setInitialLink(shopeeLink: string): Promise<{ status: string; message: string; shopee_link: string }> {
+    return request<{ status: string; message: string; shopee_link: string }>('/api/member/shopee-account/initial', {
+      method: 'POST',
+      body: JSON.stringify({ shopee_link: shopeeLink })
+    });
+  },
+
+  /**
+   * Pengajuan perubahan tautan akun Shopee oleh member (POST /api/member/shopee-account/requests)
+   */
+  async submitRequest(payload: SubmitShopeeRequestPayload): Promise<{ status: string; message: string; data: ShopeeAccountRequest }> {
+    return request<{ status: string; message: string; data: ShopeeAccountRequest }>('/api/member/shopee-account/requests', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  /**
+   * Mengambil riwayat permohonan perubahan akun Shopee milik member login (GET /api/member/shopee-account/requests)
+   */
+  async listMemberRequests(): Promise<ListShopeeRequestsResponse> {
+    return request<ListShopeeRequestsResponse>('/api/member/shopee-account/requests', {
+      method: 'GET'
+    });
+  },
+
+  /**
+   * Mengambil daftar permohonan perubahan akun Shopee untuk ditinjau admin (GET /api/admin/shopee-requests)
+   */
+  async listAdminRequests(statusFilter?: string): Promise<ListShopeeRequestsResponse> {
+    const q = statusFilter && statusFilter !== 'all' ? `?status=${encodeURIComponent(statusFilter)}` : '';
+    return request<ListShopeeRequestsResponse>(`/api/admin/shopee-requests${q}`, {
+      method: 'GET'
+    });
+  },
+
+  /**
+   * Menyetujui atau menolak permohonan perubahan akun Shopee (POST /api/admin/shopee-requests/:id/review)
+   */
+  async reviewRequest(id: string, payload: ReviewShopeeRequestPayload): Promise<{ status: string; message: string; data?: any }> {
+    return request<{ status: string; message: string; data?: any }>(`/api/admin/shopee-requests/${encodeURIComponent(id)}/review`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  }
+};

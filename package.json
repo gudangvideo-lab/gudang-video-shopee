@@ -1,0 +1,32 @@
+{
+  "name": "gudang-video-shopee",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Gudang Video Shopee Affiliate - Aplikasi katalog dan distribusi video affiliate berbasis Cloudflare Stack",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --config frontend/vite.config.ts",
+    "dev:frontend": "vite --config frontend/vite.config.ts",
+    "dev:worker": "wrangler dev",
+    "build:frontend": "vite build --config frontend/vite.config.ts",
+    "build": "npm run build:frontend",
+    "preview": "vite preview --config frontend/vite.config.ts",
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "bootstrap:admin": "node scripts/bootstrap-admin.js"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241011.0",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.2",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.8",
+    "vitest": "^2.1.2",
+    "wrangler": "^3.80.0"
+  }
+}

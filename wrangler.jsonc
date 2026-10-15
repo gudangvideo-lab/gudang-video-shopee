@@ -1,0 +1,35 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gudang-video-shopee",
+  "main": "worker/index.ts",
+  "compatibility_date": "2024-10-11",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+
+  // Integrasi Cloudflare Workers Static Assets untuk frontend Vite
+  "assets": {
+    "directory": "./frontend/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+
+  // Konfigurasi Database Cloudflare D1
+  // Isi database_id setelah membuat database via: npx wrangler d1 create gudang-video-db
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "gudang-video-db",
+      "database_id": "562ff396-402c-4633-9449-e7ce591c9225"
+    }
+  ],
+
+  // Konfigurasi Storage Video Cloudflare R2
+  // Buat bucket via: npx wrangler r2 bucket create gudang-video-storage
+  "r2_buckets": [
+    {
+      "binding": "VIDEOS_BUCKET",
+      "bucket_name": "gudang-video-storage"
+    }
+  ]
+}
