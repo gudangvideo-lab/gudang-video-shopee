@@ -110,9 +110,46 @@ function isValidHttpUrl(str: string): boolean {
   }
 }
 
+export interface VideoCursor {
+  t: string;
+  i: string;
+}
+
+export function encodeVideoCursor(createdAt: string, id: string): string {
+  const payload = JSON.stringify({ t: createdAt, i: id });
+  const base64 = btoa(payload);
+  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+export function decodeVideoCursor(cursorStr: string): VideoCursor | null {
+  if (typeof cursorStr !== 'string' || !cursorStr.trim()) return null;
+  try {
+    let base64 = cursorStr.trim().replace(/-/g, '+').replace(/_/g, '/');
+    while (base64.length % 4 !== 0) {
+      base64 += '=';
+    }
+    const decodedStr = atob(base64);
+    const parsed = JSON.parse(decodedStr);
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      typeof parsed.t === 'string' &&
+      parsed.t.trim().length > 0 &&
+      typeof parsed.i === 'string' &&
+      parsed.i.trim().length > 0 &&
+      parsed.i.length <= 128
+    ) {
+      return { t: parsed.t.trim(), i: parsed.i.trim() };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * GET /api/videos
- * Mengambil katalog video aktif untuk member terautentikasi.
+ * Mengambil katalog video aktif untuk member terautentikasi dengan cursor pagination.
  * Object key internal R2 di-omit secara ketat.
  */
 export async function handleListVideos(request: Request, db: D1Database): Promise<Response> {
@@ -139,7 +176,35 @@ export async function handleListVideos(request: Request, db: D1Database): Promis
   }
 
   const url = new URL(request.url);
-  const rackId = url.searchParams.get('rack_id');
+  const rackId = url.searchParams.get('rack_id')?.trim();
+  const cursorParam = url.searchParams.get('cursor')?.trim();
+  const limitParam = url.searchParams.get('limit')?.trim();
+  const searchQuery = url.searchParams.get('q')?.trim();
+
+  // Validasi limit pagination (default: 24, min: 1, max: 100)
+  let limit = 24;
+  if (limitParam) {
+    const parsedLimit = parseInt(limitParam, 10);
+    if (Number.isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) {
+      return jsonResponse({
+        error: 'INVALID_LIMIT',
+        message: 'Parameter limit pagination harus berupa bilangan bulat antara 1 dan 100.'
+      }, 400);
+    }
+    limit = parsedLimit;
+  }
+
+  // Validasi cursor pagination
+  let cursor: VideoCursor | null = null;
+  if (cursorParam) {
+    cursor = decodeVideoCursor(cursorParam);
+    if (!cursor) {
+      return jsonResponse({
+        error: 'INVALID_CURSOR',
+        message: 'Parameter cursor pagination tidak valid.'
+      }, 400);
+    }
+  }
 
   let query = `
     SELECT
@@ -152,21 +217,47 @@ export async function handleListVideos(request: Request, db: D1Database): Promis
   `;
   const bindings: any[] = [];
 
-  if (rackId && isValidUuid(rackId)) {
+  if (rackId && rackId !== 'all') {
+    if (!isValidUuid(rackId)) {
+      return jsonResponse({ error: 'INVALID_RACK_ID', message: 'Format ID rak tidak valid.' }, 400);
+    }
     query += ` AND v.rack_id = ?`;
     bindings.push(rackId);
   }
 
-  query += ` ORDER BY v.created_at DESC LIMIT 200`;
+  if (searchQuery) {
+    const cleanSearch = searchQuery.slice(0, 100);
+    query += ` AND (INSTR(LOWER(v.title), LOWER(?)) > 0 OR INSTR(LOWER(v.product_name), LOWER(?)) > 0 OR (v.description IS NOT NULL AND INSTR(LOWER(v.description), LOWER(?)) > 0))`;
+    bindings.push(cleanSearch, cleanSearch, cleanSearch);
+  }
+
+  if (cursor) {
+    query += ` AND (v.created_at < ? OR (v.created_at = ? AND v.id < ?))`;
+    bindings.push(cursor.t, cursor.t, cursor.i);
+  }
+
+  query += ` ORDER BY v.created_at DESC, v.id DESC LIMIT ?`;
+  bindings.push(limit + 1);
 
   const { results } = await db
     .prepare(query)
     .bind(...bindings)
     .all<Omit<VideoRow, 'r2_key' | 'uploaded_by_admin_id' | 'status' | 'updated_at'>>();
 
+  const rows = results || [];
+  const hasMore = rows.length > limit;
+  const items = hasMore ? rows.slice(0, limit) : rows;
+  const lastItem = items.length > 0 ? items[items.length - 1] : null;
+  const nextCursor = hasMore && lastItem ? encodeVideoCursor(lastItem.created_at, lastItem.id) : null;
+
   return jsonResponse({
     status: 'ok',
-    videos: results || []
+    videos: items,
+    pagination: {
+      limit,
+      has_more: hasMore,
+      next_cursor: nextCursor
+    }
   }, 200);
 }
 
@@ -560,7 +651,7 @@ export async function handleAdminUploadVideo(request: Request, env: Env): Promis
 
 /**
  * GET /api/admin/videos
- * Mengambil daftar seluruh video (termasuk yang nonaktif) untuk Administrator.
+ * Mengambil daftar seluruh video (termasuk yang nonaktif) untuk Administrator dengan cursor pagination.
  */
 export async function handleAdminListVideos(request: Request, db: D1Database): Promise<Response> {
   const auth = await requireAdmin(request, db);
@@ -571,7 +662,36 @@ export async function handleAdminListVideos(request: Request, db: D1Database): P
   }
 
   const url = new URL(request.url);
-  const rackId = url.searchParams.get('rack_id');
+  const rackId = url.searchParams.get('rack_id')?.trim();
+  const statusParam = url.searchParams.get('status')?.trim().toLowerCase();
+  const cursorParam = url.searchParams.get('cursor')?.trim();
+  const limitParam = url.searchParams.get('limit')?.trim();
+  const searchQuery = url.searchParams.get('q')?.trim();
+
+  // Validasi limit pagination (default: 24, min: 1, max: 100)
+  let limit = 24;
+  if (limitParam) {
+    const parsedLimit = parseInt(limitParam, 10);
+    if (Number.isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) {
+      return jsonResponse({
+        error: 'INVALID_LIMIT',
+        message: 'Parameter limit pagination harus berupa bilangan bulat antara 1 dan 100.'
+      }, 400);
+    }
+    limit = parsedLimit;
+  }
+
+  // Validasi cursor pagination
+  let cursor: VideoCursor | null = null;
+  if (cursorParam) {
+    cursor = decodeVideoCursor(cursorParam);
+    if (!cursor) {
+      return jsonResponse({
+        error: 'INVALID_CURSOR',
+        message: 'Parameter cursor pagination tidak valid.'
+      }, 400);
+    }
+  }
 
   let query = `
     SELECT
@@ -583,24 +703,56 @@ export async function handleAdminListVideos(request: Request, db: D1Database): P
     FROM videos v
     LEFT JOIN racks r ON v.rack_id = r.id
     LEFT JOIN users u ON v.uploaded_by_admin_id = u.id
+    WHERE 1=1
   `;
   const bindings: any[] = [];
 
-  if (rackId && isValidUuid(rackId)) {
-    query += ` WHERE v.rack_id = ?`;
+  if (rackId && rackId !== 'all') {
+    if (!isValidUuid(rackId)) {
+      return jsonResponse({ error: 'INVALID_RACK_ID', message: 'Format ID rak tidak valid.' }, 400);
+    }
+    query += ` AND v.rack_id = ?`;
     bindings.push(rackId);
   }
 
-  query += ` ORDER BY v.created_at DESC LIMIT 200`;
+  if (statusParam === 'active' || statusParam === 'inactive') {
+    query += ` AND v.status = ?`;
+    bindings.push(statusParam);
+  }
+
+  if (searchQuery) {
+    const cleanSearch = searchQuery.slice(0, 100);
+    query += ` AND (INSTR(LOWER(v.title), LOWER(?)) > 0 OR INSTR(LOWER(v.product_name), LOWER(?)) > 0 OR (v.description IS NOT NULL AND INSTR(LOWER(v.description), LOWER(?)) > 0))`;
+    bindings.push(cleanSearch, cleanSearch, cleanSearch);
+  }
+
+  if (cursor) {
+    query += ` AND (v.created_at < ? OR (v.created_at = ? AND v.id < ?))`;
+    bindings.push(cursor.t, cursor.t, cursor.i);
+  }
+
+  query += ` ORDER BY v.created_at DESC, v.id DESC LIMIT ?`;
+  bindings.push(limit + 1);
 
   const { results } = await db
     .prepare(query)
     .bind(...bindings)
     .all<AdminVideoRow>();
 
+  const rows = results || [];
+  const hasMore = rows.length > limit;
+  const items = hasMore ? rows.slice(0, limit) : rows;
+  const lastItem = items.length > 0 ? items[items.length - 1] : null;
+  const nextCursor = hasMore && lastItem ? encodeVideoCursor(lastItem.created_at, lastItem.id) : null;
+
   return jsonResponse({
     status: 'ok',
-    videos: results || []
+    videos: items,
+    pagination: {
+      limit,
+      has_more: hasMore,
+      next_cursor: nextCursor
+    }
   }, 200);
 }
 

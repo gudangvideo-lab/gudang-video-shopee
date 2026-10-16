@@ -201,14 +201,22 @@ export interface AdminVideoItem extends VideoItem {
   uploaded_by_username: string | null;
 }
 
+export interface VideoPaginationInfo {
+  limit: number;
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
 export interface ListVideosResponse {
   status: 'ok';
   videos: VideoItem[];
+  pagination?: VideoPaginationInfo;
 }
 
 export interface ListAdminVideosResponse {
   status: 'ok';
   videos: AdminVideoItem[];
+  pagination?: VideoPaginationInfo;
 }
 
 export interface UploadVideoPayload {

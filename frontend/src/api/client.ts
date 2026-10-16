@@ -188,6 +188,21 @@ export const authApi = {
   }
 };
 
+export interface ListVideosOptions {
+  rackId?: string;
+  cursor?: string;
+  limit?: number;
+  q?: string;
+}
+
+export interface ListAdminVideosOptions {
+  rackId?: string;
+  status?: 'active' | 'inactive';
+  cursor?: string;
+  limit?: number;
+  q?: string;
+}
+
 export const adminApi = {
   /**
    * Mengambil daftar kode aktivasi (GET /api/admin/activation-codes)
@@ -239,8 +254,18 @@ export const adminApi = {
   /**
    * Mengambil daftar seluruh video (aktif dan nonaktif) untuk admin (GET /api/admin/videos)
    */
-  async listVideos(rackId?: string): Promise<ListAdminVideosResponse> {
-    const q = rackId ? `?rack_id=${encodeURIComponent(rackId)}` : '';
+  async listVideos(optsOrRackId?: string | ListAdminVideosOptions): Promise<ListAdminVideosResponse> {
+    const params = new URLSearchParams();
+    if (typeof optsOrRackId === 'string') {
+      if (optsOrRackId && optsOrRackId !== 'all') params.set('rack_id', optsOrRackId);
+    } else if (optsOrRackId && typeof optsOrRackId === 'object') {
+      if (optsOrRackId.rackId && optsOrRackId.rackId !== 'all') params.set('rack_id', optsOrRackId.rackId);
+      if (optsOrRackId.status) params.set('status', optsOrRackId.status);
+      if (optsOrRackId.cursor) params.set('cursor', optsOrRackId.cursor);
+      if (optsOrRackId.limit) params.set('limit', String(optsOrRackId.limit));
+      if (optsOrRackId.q) params.set('q', optsOrRackId.q);
+    }
+    const q = params.toString() ? `?${params.toString()}` : '';
     return request<ListAdminVideosResponse>(`/api/admin/videos${q}`, {
       method: 'GET'
     });
@@ -431,8 +456,17 @@ export const videoApi = {
   /**
    * Mengambil daftar katalog video aktif untuk member (GET /api/videos)
    */
-  async listVideos(rackId?: string): Promise<ListVideosResponse> {
-    const q = rackId ? `?rack_id=${encodeURIComponent(rackId)}` : '';
+  async listVideos(optsOrRackId?: string | ListVideosOptions): Promise<ListVideosResponse> {
+    const params = new URLSearchParams();
+    if (typeof optsOrRackId === 'string') {
+      if (optsOrRackId && optsOrRackId !== 'all') params.set('rack_id', optsOrRackId);
+    } else if (optsOrRackId && typeof optsOrRackId === 'object') {
+      if (optsOrRackId.rackId && optsOrRackId.rackId !== 'all') params.set('rack_id', optsOrRackId.rackId);
+      if (optsOrRackId.cursor) params.set('cursor', optsOrRackId.cursor);
+      if (optsOrRackId.limit) params.set('limit', String(optsOrRackId.limit));
+      if (optsOrRackId.q) params.set('q', optsOrRackId.q);
+    }
+    const q = params.toString() ? `?${params.toString()}` : '';
     return request<ListVideosResponse>(`/api/videos${q}`, {
       method: 'GET'
     });

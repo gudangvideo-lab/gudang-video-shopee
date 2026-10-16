@@ -19,6 +19,7 @@ import { ResetDevicePage } from '../pages/ResetDevicePage';
 import { UserDashboardPage } from '../pages/UserDashboardPage';
 import { AdminPage } from '../pages/AdminPage';
 import { AuthProvider } from '../context/AuthContext';
+import * as authContext from '../context/AuthContext';
 import { RouterProvider } from '../router/Router';
 
 describe('Frontend API Client & Security Standards', () => {
@@ -361,5 +362,127 @@ describe('Frontend UI Components & Page Rendering', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it('merender UserDashboardPage untuk member dengan input pencarian dibatasi maxLength 100', () => {
+    const authSpy = vi.spyOn(authContext, 'useAuth').mockReturnValue({
+      user: {
+        id: 'usr-member-1',
+        username: 'member_affiliate',
+        role: 'member',
+        status: 'active',
+        shopee_link: 'https://shopee.co.id/member_affiliate'
+      },
+      device: null,
+      loading: false,
+      error: null,
+      refreshUser: vi.fn(),
+      logout: vi.fn(),
+      setUserFromResponse: vi.fn()
+    });
+
+    try {
+      const html = renderToStaticMarkup(
+        <RouterProvider>
+          <UserDashboardPage />
+        </RouterProvider>
+      );
+      expect(html).toContain('Katalog Video Affiliate Shopee');
+      expect(html.toLowerCase()).toContain('maxlength="100"');
+    } finally {
+      authSpy.mockRestore();
+    }
+  });
+
+  it('merender AdminPage untuk admin dengan input pencarian video dibatasi maxLength 100', () => {
+    const authSpy = vi.spyOn(authContext, 'useAuth').mockReturnValue({
+      user: {
+        id: 'usr-admin-1',
+        username: 'admin_official',
+        role: 'admin',
+        status: 'active'
+      },
+      device: null,
+      loading: false,
+      error: null,
+      refreshUser: vi.fn(),
+      logout: vi.fn(),
+      setUserFromResponse: vi.fn()
+    });
+
+    try {
+      const html = renderToStaticMarkup(
+        <RouterProvider>
+          <AdminPage initialTab="videos" />
+        </RouterProvider>
+      );
+      expect(html).toContain('Daftar Video di R2 Privat');
+      expect(html.toLowerCase()).toContain('maxlength="100"');
+    } finally {
+      authSpy.mockRestore();
+    }
+  });
+
+  it('pola generation sequence counter memastikan request lambat yang selesai belakangan tidak menimpa request terbaru', async () => {
+    let activeRequestId = 0;
+    let stateVideos: string[] = [];
+    let isLoading = false;
+
+    // Simulasi fungsi fetch guarded dengan generation sequence counter
+    const runGuardedFetch = async (delayMs: number, resultVideos: string[]) => {
+      const reqId = ++activeRequestId;
+      isLoading = true;
+
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+
+      // Abaikan jika request ini telah digantikan oleh request yang lebih baru
+      if (reqId !== activeRequestId) return;
+
+      stateVideos = resultVideos;
+      isLoading = false;
+    };
+
+    // Request 1 (misal filter rak lama, lambat 50ms)
+    const req1 = runGuardedFetch(50, ['Video Rak Lama 1', 'Video Rak Lama 2']);
+    // Request 2 (misal filter rak baru, cepat 10ms)
+    const req2 = runGuardedFetch(10, ['Video Rak Baru 1']);
+
+    await Promise.all([req1, req2]);
+
+    // Data hasil akhir harus sesuai dengan Request 2 terbaru
+    expect(stateVideos).toEqual(['Video Rak Baru 1']);
+    expect(isLoading).toBe(false);
+  });
+
+  it('pola generation sequence counter mengabaikan error UI jika berasal dari request lama yang telah dibatalkan', async () => {
+    let activeRequestId = 0;
+    let uiError: string | null = null;
+    let stateVideos: string[] = [];
+
+    const runGuardedFetchWithError = async (fail: boolean, delayMs: number, resultVideos: string[]) => {
+      const reqId = ++activeRequestId;
+
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+
+      if (fail) {
+        if (reqId !== activeRequestId) return; // Abaikan error request usang
+        uiError = 'Gagal memuat katalog lama';
+        return;
+      }
+
+      if (reqId !== activeRequestId) return;
+      stateVideos = resultVideos;
+      uiError = null;
+    };
+
+    // Request 1: gagal setelah 50ms
+    const req1 = runGuardedFetchWithError(true, 50, []);
+    // Request 2: sukses setelah 10ms
+    const req2 = runGuardedFetchWithError(false, 10, ['Video Berhasil']);
+
+    await Promise.all([req1, req2]);
+
+    expect(stateVideos).toEqual(['Video Berhasil']);
+    expect(uiError).toBeNull();
   });
 });

@@ -4,7 +4,7 @@
  * Menampilkan profil pengguna, telemetri perangkat terikat, dan katalog video privat dari Cloudflare R2.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useRouter } from '../router/Router';
 import { videoApi, shopeeApi, ApiClientError } from '../api/client';
@@ -18,6 +18,8 @@ import { Input } from '../components/Input';
 export const UserDashboardPage: React.FC = () => {
   const { user, device, logout, refreshUser } = useAuth();
   const { navigate } = useRouter();
+
+  const catalogRequestIdRef = useRef<number>(0);
 
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [racks, setRacks] = useState<RackItem[]>([]);
@@ -43,6 +45,13 @@ export const UserDashboardPage: React.FC = () => {
   // Request history modal state
   const [showHistoryModal, setShowHistoryModal] = useState(false);
 
+  // Pagination state
+  const [cursorHistory, setCursorHistory] = useState<string[]>([]);
+  const [currentCursor, setCurrentCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState<boolean>(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [pageIndex, setPageIndex] = useState<number>(1);
+
   const fetchShopeeRequests = useCallback(async () => {
     if (user?.role === 'member') {
       try {
@@ -63,20 +72,44 @@ export const UserDashboardPage: React.FC = () => {
     }
   }, []);
 
-  const fetchCatalog = useCallback(async (rackIdToFilter?: string) => {
+  const fetchCatalog = useCallback(async (options?: {
+    rackId?: string;
+    cursor?: string | null;
+    page?: number;
+    q?: string;
+  }) => {
     // Jika member belum memiliki shopee_link, tunda memuat katalog
     if (user?.role === 'member' && !user.shopee_link) {
       setLoadingVideos(false);
       return;
     }
 
+    const currentRequestId = ++catalogRequestIdRef.current;
     setLoadingVideos(true);
     setVideoError(null);
     try {
-      const activeFilter = rackIdToFilter !== undefined ? rackIdToFilter : selectedRackId;
-      const res = await videoApi.listVideos(activeFilter !== 'all' ? activeFilter : undefined);
+      const activeRack = options?.rackId !== undefined ? options.rackId : selectedRackId;
+      const activeCursor = options?.cursor !== undefined ? (options.cursor || undefined) : (currentCursor || undefined);
+      const activeQ = options?.q !== undefined ? options.q : searchQuery;
+
+      const res = await videoApi.listVideos({
+        rackId: activeRack !== 'all' ? activeRack : undefined,
+        cursor: activeCursor,
+        limit: 24,
+        q: activeQ.trim() || undefined
+      });
+
+      // Abaikan respons jika ada request baru yang telah diluncurkan
+      if (currentRequestId !== catalogRequestIdRef.current) return;
+
       setVideos(res.videos || []);
+      setHasMore(res.pagination?.has_more ?? false);
+      setNextCursor(res.pagination?.next_cursor ?? null);
+      if (options?.page !== undefined) {
+        setPageIndex(options.page);
+      }
     } catch (err) {
+      if (currentRequestId !== catalogRequestIdRef.current) return;
       if (err instanceof ApiClientError) {
         if (err.status === 401) {
           navigate('/login');
@@ -87,19 +120,53 @@ export const UserDashboardPage: React.FC = () => {
         setVideoError('Gagal memuat katalog video dari server.');
       }
     } finally {
-      setLoadingVideos(false);
+      if (currentRequestId === catalogRequestIdRef.current) {
+        setLoadingVideos(false);
+      }
     }
-  }, [user?.role, user?.shopee_link, selectedRackId, navigate]);
+  }, [user?.role, user?.shopee_link, selectedRackId, currentCursor, searchQuery, navigate]);
+
+  const handleNextPage = () => {
+    if (!nextCursor || loadingVideos) return;
+    setCursorHistory((prev) => [...prev, currentCursor || '']);
+    setCurrentCursor(nextCursor);
+    fetchCatalog({ cursor: nextCursor, page: pageIndex + 1 });
+  };
+
+  const handlePrevPage = () => {
+    if (pageIndex <= 1 || loadingVideos) return;
+    const newHistory = [...cursorHistory];
+    const prevCursor = newHistory.pop() || null;
+    setCursorHistory(newHistory);
+    setCurrentCursor(prevCursor);
+    fetchCatalog({ cursor: prevCursor, page: pageIndex - 1 });
+  };
+
+  const handleRackChange = (rackId: string) => {
+    setSelectedRackId(rackId);
+    setCursorHistory([]);
+    setCurrentCursor(null);
+    setPageIndex(1);
+    fetchCatalog({ rackId, cursor: null, page: 1 });
+  };
+
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setCursorHistory([]);
+    setCurrentCursor(null);
+    setPageIndex(1);
+    fetchCatalog({ cursor: null, page: 1, q: searchQuery });
+  };
 
   useEffect(() => {
     if (user) {
       fetchRacks();
-      fetchCatalog(selectedRackId);
+      fetchCatalog({ cursor: null, page: 1 });
       if (user.role === 'member') {
         fetchShopeeRequests();
       }
     }
-  }, [user, selectedRackId, fetchRacks, fetchCatalog, fetchShopeeRequests]);
+  }, [user, fetchRacks, fetchCatalog, fetchShopeeRequests]);
 
   const handleInitialLinkSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -429,24 +496,40 @@ export const UserDashboardPage: React.FC = () => {
               </p>
             </div>
 
-            <div className="catalog-controls">
+            <form onSubmit={handleSearchSubmit} className="catalog-controls">
               <input
                 type="text"
                 className="form-input search-input"
                 placeholder="Cari judul atau nama produk..."
                 value={searchQuery}
+                maxLength={100}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
               <Button
+                type="submit"
                 variant="outline"
                 className="btn-sm"
-                onClick={() => fetchCatalog(selectedRackId)}
                 loading={loadingVideos}
-                loadingText="Memuat..."
+                loadingText="Mencari..."
+              >
+                Cari
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="btn-sm"
+                onClick={() => {
+                  setSearchQuery('');
+                  setCursorHistory([]);
+                  setCurrentCursor(null);
+                  setPageIndex(1);
+                  fetchCatalog({ rackId: selectedRackId, cursor: null, page: 1, q: '' });
+                }}
+                disabled={loadingVideos}
               >
                 Segarkan
               </Button>
-            </div>
+            </form>
           </div>
 
           {/* Bilah Filter Kategori / Rak */}
@@ -454,16 +537,16 @@ export const UserDashboardPage: React.FC = () => {
             <button
               type="button"
               className={`btn btn-xs ${selectedRackId === 'all' ? 'btn-primary' : 'btn-outline'}`}
-              onClick={() => setSelectedRackId('all')}
+              onClick={() => handleRackChange('all')}
             >
-              Semua Rak ({videos.length})
+              Semua Rak
             </button>
             {racks.map((r) => (
               <button
                 key={r.id}
                 type="button"
                 className={`btn btn-xs ${selectedRackId === r.id ? 'btn-primary' : 'btn-outline'}`}
-                onClick={() => setSelectedRackId(r.id)}
+                onClick={() => handleRackChange(r.id)}
               >
                 📂 {r.name} ({r.video_count})
               </button>
@@ -549,6 +632,44 @@ export const UserDashboardPage: React.FC = () => {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Kontrol Navigasi Halaman (Pagination) */}
+          {videos.length > 0 && (
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginTop: '24px',
+                paddingTop: '16px',
+                borderTop: '1px solid #e5e7eb',
+                flexWrap: 'wrap',
+                gap: '12px'
+              }}
+            >
+              <div style={{ fontSize: '0.875rem', color: '#6b7280' }}>
+                Halaman <strong>{pageIndex}</strong> &bull; Menampilkan {videos.length} video {hasMore ? '(Ada halaman berikutnya)' : '(Akhir katalog)'}
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <Button
+                  variant="outline"
+                  className="btn-sm"
+                  disabled={pageIndex <= 1 || loadingVideos}
+                  onClick={handlePrevPage}
+                >
+                  &larr; Halaman Sebelumnya
+                </Button>
+                <Button
+                  variant="primary"
+                  className="btn-sm"
+                  disabled={!hasMore || loadingVideos}
+                  onClick={handleNextPage}
+                >
+                  Halaman Berikutnya &rarr;
+                </Button>
+              </div>
             </div>
           )}
         </section>

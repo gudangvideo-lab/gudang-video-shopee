@@ -4,7 +4,7 @@
  * Meliputi pengelolaan video R2, kode aktivasi, pengguna & reset perangkat, serta audit log.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useRouter } from '../router/Router';
 import { adminApi, superAdminApi, videoApi, shopeeApi, ApiClientError } from '../api/client';
@@ -24,11 +24,13 @@ import { Modal } from '../components/Modal';
 
 type AdminTab = 'overview' | 'videos' | 'racks' | 'codes' | 'users' | 'shopee' | 'admins' | 'logs';
 
-export const AdminPage: React.FC = () => {
+export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'overview' }) => {
   const { user } = useAuth();
   const { navigate } = useRouter();
 
-  const [activeTab, setActiveTab] = useState<AdminTab>('overview');
+  const adminVideosRequestIdRef = useRef<number>(0);
+
+  const [activeTab, setActiveTab] = useState<AdminTab>(initialTab);
 
   // Data state
   const [videos, setVideos] = useState<AdminVideoItem[]>([]);
@@ -142,19 +144,119 @@ export const AdminPage: React.FC = () => {
   // Copy indicator state
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
+  // Video Pagination & Filter state
+  const [videoCursorHistory, setVideoCursorHistory] = useState<string[]>([]);
+  const [videoCurrentCursor, setVideoCurrentCursor] = useState<string | null>(null);
+  const [videoHasMore, setVideoHasMore] = useState<boolean>(false);
+  const [videoNextCursor, setVideoNextCursor] = useState<string | null>(null);
+  const [videoPageIndex, setVideoPageIndex] = useState<number>(1);
+  const [videoSearch, setVideoSearch] = useState<string>('');
+  const [videoFilterRackId, setVideoFilterRackId] = useState<string>('all');
+  const [videoFilterStatus, setVideoFilterStatus] = useState<'all' | 'active' | 'inactive'>('all');
+  const [loadingVideosTab, setLoadingVideosTab] = useState<boolean>(false);
+
+  const fetchVideosData = useCallback(async (options?: {
+    cursor?: string | null;
+    rackId?: string;
+    status?: 'all' | 'active' | 'inactive';
+    q?: string;
+    page?: number;
+  }) => {
+    const currentRequestId = ++adminVideosRequestIdRef.current;
+    setLoadingVideosTab(true);
+    try {
+      const activeCursor = options?.cursor !== undefined ? options.cursor : videoCurrentCursor;
+      const activeRack = options?.rackId !== undefined ? options.rackId : videoFilterRackId;
+      const activeStatus = options?.status !== undefined ? options.status : videoFilterStatus;
+      const activeQ = options?.q !== undefined ? options.q : videoSearch;
+
+      const videosRes = await adminApi.listVideos({
+        cursor: activeCursor || undefined,
+        limit: 24,
+        rackId: activeRack !== 'all' ? activeRack : undefined,
+        status: activeStatus !== 'all' ? activeStatus : undefined,
+        q: activeQ.trim() || undefined
+      });
+
+      if (currentRequestId !== adminVideosRequestIdRef.current) return;
+
+      setVideos(videosRes.videos || []);
+      setVideoHasMore(videosRes.pagination?.has_more ?? false);
+      setVideoNextCursor(videosRes.pagination?.next_cursor ?? null);
+      if (options?.page !== undefined) {
+        setVideoPageIndex(options.page);
+      }
+    } catch (err) {
+      if (currentRequestId !== adminVideosRequestIdRef.current) return;
+      if (err instanceof ApiClientError) {
+        setErrorMsg(err.message);
+      }
+    } finally {
+      if (currentRequestId === adminVideosRequestIdRef.current) {
+        setLoadingVideosTab(false);
+      }
+    }
+  }, [videoCurrentCursor, videoFilterRackId, videoFilterStatus, videoSearch]);
+
+  const handleAdminVideoNextPage = () => {
+    if (!videoNextCursor || loadingVideosTab) return;
+    setVideoCursorHistory((prev) => [...prev, videoCurrentCursor || '']);
+    setVideoCurrentCursor(videoNextCursor);
+    fetchVideosData({ cursor: videoNextCursor, page: videoPageIndex + 1 });
+  };
+
+  const handleAdminVideoPrevPage = () => {
+    if (videoPageIndex <= 1 || loadingVideosTab) return;
+    const newHistory = [...videoCursorHistory];
+    const prevCursor = newHistory.pop() || null;
+    setVideoCursorHistory(newHistory);
+    setVideoCurrentCursor(prevCursor);
+    fetchVideosData({ cursor: prevCursor, page: videoPageIndex - 1 });
+  };
+
+  const handleAdminVideoFilterChange = (
+    newRackId?: string,
+    newStatus?: 'all' | 'active' | 'inactive',
+    newQ?: string
+  ) => {
+    const rId = newRackId !== undefined ? newRackId : videoFilterRackId;
+    const st = newStatus !== undefined ? newStatus : videoFilterStatus;
+    const q = newQ !== undefined ? newQ : videoSearch;
+    if (newRackId !== undefined) setVideoFilterRackId(newRackId);
+    if (newStatus !== undefined) setVideoFilterStatus(newStatus);
+    if (newQ !== undefined) setVideoSearch(newQ);
+    setVideoCursorHistory([]);
+    setVideoCurrentCursor(null);
+    setVideoPageIndex(1);
+    fetchVideosData({ rackId: rId, status: st, q, cursor: null, page: 1 });
+  };
+
   const fetchAllData = useCallback(async () => {
+    const currentVideosRequestId = ++adminVideosRequestIdRef.current;
     setLoading(true);
     setErrorMsg(null);
     try {
       const [videosRes, codesRes, usersRes, logsRes, shopeeRes, racksRes] = await Promise.all([
-        adminApi.listVideos(),
+        adminApi.listVideos({
+          cursor: videoCurrentCursor || undefined,
+          limit: 24,
+          rackId: videoFilterRackId !== 'all' ? videoFilterRackId : undefined,
+          status: videoFilterStatus !== 'all' ? videoFilterStatus : undefined,
+          q: videoSearch.trim() || undefined
+        }),
         adminApi.listActivationCodes(),
         adminApi.listUsers(),
         adminApi.listAuditLogs(),
         shopeeApi.listAdminRequests('all'),
         adminApi.listRacks()
       ]);
-      setVideos(videosRes.videos || []);
+
+      if (currentVideosRequestId === adminVideosRequestIdRef.current) {
+        setVideos(videosRes.videos || []);
+        setVideoHasMore(videosRes.pagination?.has_more ?? false);
+        setVideoNextCursor(videosRes.pagination?.next_cursor ?? null);
+      }
+
       setCodes(codesRes.codes || []);
       setUsers(usersRes.users || []);
       setLogs(logsRes.logs || []);
@@ -181,7 +283,7 @@ export const AdminPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [user?.role]);
+  }, [user?.role, videoCurrentCursor, videoFilterRackId, videoFilterStatus, videoSearch]);
 
   useEffect(() => {
     if (user && (user.role === 'admin' || user.role === 'super_admin')) {
@@ -936,14 +1038,82 @@ export const AdminPage: React.FC = () => {
       {/* TAB 2: KATALOG VIDEO */}
       {activeTab === 'videos' && (
         <div className="tab-pane">
-          <div className="table-header-bar">
-            <h3>Daftar Video di R2 Privat ({videos.length})</h3>
+          <div className="table-header-bar" style={{ flexWrap: 'wrap', gap: '12px' }}>
+            <div>
+              <h3>Daftar Video di R2 Privat ({videos.length})</h3>
+              <p className="text-xs text-muted mt-1">
+                Katalog video Cloudflare R2 dengan navigasi cursor-based dan filter server-side.
+              </p>
+            </div>
             <Button
               variant="primary"
               className="btn-sm"
               onClick={() => setShowUploadModal(true)}
             >
               + Unggah Video Baru
+            </Button>
+          </div>
+
+          {/* Filter & Search Bar */}
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center', margin: '16px 0', flexWrap: 'wrap' }}>
+            <input
+              type="text"
+              className="form-input"
+              style={{ maxWidth: '260px' }}
+              placeholder="Cari judul / produk..."
+              value={videoSearch}
+              maxLength={100}
+              onChange={(e) => setVideoSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleAdminVideoFilterChange(undefined, undefined, videoSearch);
+                }
+              }}
+            />
+            <Button
+              variant="outline"
+              className="btn-sm"
+              onClick={() => handleAdminVideoFilterChange(undefined, undefined, videoSearch)}
+              loading={loadingVideosTab}
+              loadingText="Mencari..."
+            >
+              Cari
+            </Button>
+            <select
+              className="form-input"
+              style={{ maxWidth: '180px' }}
+              value={videoFilterRackId}
+              onChange={(e) => handleAdminVideoFilterChange(e.target.value, undefined, undefined)}
+            >
+              <option value="all">Semua Rak</option>
+              {racks.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+            <select
+              className="form-input"
+              style={{ maxWidth: '140px' }}
+              value={videoFilterStatus}
+              onChange={(e) => handleAdminVideoFilterChange(undefined, e.target.value as 'all' | 'active' | 'inactive', undefined)}
+            >
+              <option value="all">Semua Status</option>
+              <option value="active">Aktif</option>
+              <option value="inactive">Nonaktif</option>
+            </select>
+            <Button
+              variant="outline"
+              className="btn-sm"
+              onClick={() => {
+                setVideoSearch('');
+                setVideoFilterRackId('all');
+                setVideoFilterStatus('all');
+                handleAdminVideoFilterChange('all', 'all', '');
+              }}
+            >
+              Reset Filter
             </Button>
           </div>
 
@@ -1041,6 +1211,44 @@ export const AdminPage: React.FC = () => {
               </tbody>
             </table>
           </div>
+
+          {/* Kontrol Navigasi Halaman (Pagination) */}
+          {videos.length > 0 && (
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginTop: '16px',
+                paddingTop: '16px',
+                borderTop: '1px solid #e5e7eb',
+                flexWrap: 'wrap',
+                gap: '12px'
+              }}
+            >
+              <div style={{ fontSize: '0.875rem', color: '#6b7280' }}>
+                Halaman <strong>{videoPageIndex}</strong> &bull; Menampilkan {videos.length} video {videoHasMore ? '(Ada halaman berikutnya)' : '(Akhir katalog)'}
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <Button
+                  variant="outline"
+                  className="btn-sm"
+                  disabled={videoPageIndex <= 1 || loadingVideosTab}
+                  onClick={handleAdminVideoPrevPage}
+                >
+                  &larr; Halaman Sebelumnya
+                </Button>
+                <Button
+                  variant="primary"
+                  className="btn-sm"
+                  disabled={!videoHasMore || loadingVideosTab}
+                  onClick={handleAdminVideoNextPage}
+                >
+                  Halaman Berikutnya &rarr;
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
