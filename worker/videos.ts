@@ -40,6 +40,8 @@ interface VideoRow {
   download_count: number;
   created_at: string;
   updated_at: string;
+  rack_id?: string | null;
+  rack_name?: string | null;
 }
 
 /**
@@ -136,14 +138,30 @@ export async function handleListVideos(request: Request, db: D1Database): Promis
     }, 403);
   }
 
+  const url = new URL(request.url);
+  const rackId = url.searchParams.get('rack_id');
+
+  let query = `
+    SELECT
+      v.id, v.title, v.description, v.product_name, v.product_url,
+      v.file_size, v.content_type, v.created_at, v.rack_id,
+      r.name AS rack_name
+    FROM videos v
+    LEFT JOIN racks r ON v.rack_id = r.id
+    WHERE v.status = 'active'
+  `;
+  const bindings: any[] = [];
+
+  if (rackId && isValidUuid(rackId)) {
+    query += ` AND v.rack_id = ?`;
+    bindings.push(rackId);
+  }
+
+  query += ` ORDER BY v.created_at DESC LIMIT 200`;
+
   const { results } = await db
-    .prepare(`
-      SELECT id, title, description, product_name, product_url, file_size, content_type, created_at
-      FROM videos
-      WHERE status = 'active'
-      ORDER BY created_at DESC
-      LIMIT 200
-    `)
+    .prepare(query)
+    .bind(...bindings)
     .all<Omit<VideoRow, 'r2_key' | 'uploaded_by_admin_id' | 'status' | 'updated_at'>>();
 
   return jsonResponse({
@@ -185,9 +203,13 @@ export async function handleGetVideo(request: Request, db: D1Database, videoId: 
 
   const video = await db
     .prepare(`
-      SELECT id, title, description, product_name, product_url, file_size, content_type, created_at
-      FROM videos
-      WHERE id = ? AND status = 'active'
+      SELECT
+        v.id, v.title, v.description, v.product_name, v.product_url,
+        v.file_size, v.content_type, v.created_at, v.rack_id,
+        r.name AS rack_name
+      FROM videos v
+      LEFT JOIN racks r ON v.rack_id = r.id
+      WHERE v.id = ? AND v.status = 'active'
     `)
     .bind(videoId)
     .first<Omit<VideoRow, 'r2_key' | 'uploaded_by_admin_id' | 'status' | 'updated_at'>>();
@@ -363,6 +385,15 @@ export async function handleAdminUploadVideo(request: Request, env: Env): Promis
   const productUrl = formData.get('product_url');
   const description = formData.get('description');
   const statusParam = formData.get('status');
+  const rackIdParam = formData.get('rack_id');
+
+  let rackId = '00000000-0000-0000-0000-000000000001';
+  if (typeof rackIdParam === 'string' && isValidUuid(rackIdParam)) {
+    const rackCheck = await env.DB.prepare('SELECT id FROM racks WHERE id = ?').bind(rackIdParam).first();
+    if (rackCheck) {
+      rackId = rackIdParam;
+    }
+  }
 
   if (!isUploadedFile(file) || file.size === 0) {
     return jsonResponse({
@@ -469,8 +500,8 @@ export async function handleAdminUploadVideo(request: Request, env: Env): Promis
       env.DB.prepare(`
         INSERT INTO videos (
           id, title, description, product_name, product_url,
-          r2_key, content_type, file_size, status, uploaded_by_admin_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          r2_key, content_type, file_size, status, uploaded_by_admin_id, rack_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         videoId,
         title.trim(),
@@ -481,7 +512,8 @@ export async function handleAdminUploadVideo(request: Request, env: Env): Promis
         safeContentType,
         file.size,
         videoStatus,
-        auth.ctx.user.id
+        auth.ctx.user.id,
+        rackId
       ),
 
       env.DB.prepare(`
@@ -520,7 +552,8 @@ export async function handleAdminUploadVideo(request: Request, env: Env): Promis
       product_url: productUrl.trim(),
       file_size: file.size,
       content_type: safeContentType,
-      status: videoStatus
+      status: videoStatus,
+      rack_id: rackId
     }
   }, 201);
 }
@@ -537,18 +570,32 @@ export async function handleAdminListVideos(request: Request, db: D1Database): P
     uploaded_by_username: string | null;
   }
 
+  const url = new URL(request.url);
+  const rackId = url.searchParams.get('rack_id');
+
+  let query = `
+    SELECT
+      v.id, v.title, v.description, v.product_name, v.product_url,
+      v.content_type, v.file_size, v.status, v.download_count,
+      v.created_at, v.updated_at, v.rack_id,
+      r.name AS rack_name,
+      u.username AS uploaded_by_username
+    FROM videos v
+    LEFT JOIN racks r ON v.rack_id = r.id
+    LEFT JOIN users u ON v.uploaded_by_admin_id = u.id
+  `;
+  const bindings: any[] = [];
+
+  if (rackId && isValidUuid(rackId)) {
+    query += ` WHERE v.rack_id = ?`;
+    bindings.push(rackId);
+  }
+
+  query += ` ORDER BY v.created_at DESC LIMIT 200`;
+
   const { results } = await db
-    .prepare(`
-      SELECT
-        v.id, v.title, v.description, v.product_name, v.product_url,
-        v.content_type, v.file_size, v.status, v.download_count,
-        v.created_at, v.updated_at,
-        u.username AS uploaded_by_username
-      FROM videos v
-      LEFT JOIN users u ON v.uploaded_by_admin_id = u.id
-      ORDER BY v.created_at DESC
-      LIMIT 200
-    `)
+    .prepare(query)
+    .bind(...bindings)
     .all<AdminVideoRow>();
 
   return jsonResponse({
@@ -591,7 +638,7 @@ export async function handleAdminUpdateVideo(
     return jsonResponse({ error: 'INVALID_JSON', message: 'Payload JSON tidak valid.' }, 400);
   }
 
-  const { title, description, product_name, product_url, status } = body;
+  const { title, description, product_name, product_url, status, rack_id } = body;
 
   const updates: string[] = [];
   const bindings: any[] = [];
@@ -638,6 +685,18 @@ export async function handleAdminUpdateVideo(
     bindings.push(cleanStatus);
   }
 
+  if (rack_id !== undefined) {
+    if (typeof rack_id !== 'string' || !isValidUuid(rack_id)) {
+      return jsonResponse({ error: 'INVALID_RACK_ID', message: 'Format ID rak tidak valid.' }, 400);
+    }
+    const rackCheck = await db.prepare('SELECT id FROM racks WHERE id = ?').bind(rack_id).first();
+    if (!rackCheck) {
+      return jsonResponse({ error: 'RACK_NOT_FOUND', message: 'Rak tujuan tidak ditemukan.' }, 404);
+    }
+    updates.push('rack_id = ?');
+    bindings.push(rack_id);
+  }
+
   if (updates.length === 0) {
     return jsonResponse({ error: 'NO_UPDATES', message: 'Tidak ada kolom yang diperbarui.' }, 400);
   }
@@ -665,9 +724,14 @@ export async function handleAdminUpdateVideo(
 
   const updatedVideo = await db
     .prepare(`
-      SELECT id, title, description, product_name, product_url, file_size, content_type, status, download_count, updated_at
-      FROM videos
-      WHERE id = ?
+      SELECT
+        v.id, v.title, v.description, v.product_name, v.product_url,
+        v.file_size, v.content_type, v.status, v.download_count,
+        v.created_at, v.updated_at, v.rack_id,
+        r.name AS rack_name
+      FROM videos v
+      LEFT JOIN racks r ON v.rack_id = r.id
+      WHERE v.id = ?
     `)
     .bind(videoId)
     .first();

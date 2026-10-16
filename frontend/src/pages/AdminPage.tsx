@@ -13,7 +13,8 @@ import {
   AdminUserItem,
   AuditLogItem,
   AdminVideoItem,
-  ShopeeAccountRequest
+  ShopeeAccountRequest,
+  RackItem
 } from '../api/types';
 import { Badge } from '../components/Badge';
 import { Button } from '../components/Button';
@@ -21,7 +22,7 @@ import { Input } from '../components/Input';
 import { Alert } from '../components/Alert';
 import { Modal } from '../components/Modal';
 
-type AdminTab = 'overview' | 'videos' | 'codes' | 'users' | 'shopee' | 'admins' | 'logs';
+type AdminTab = 'overview' | 'videos' | 'racks' | 'codes' | 'users' | 'shopee' | 'admins' | 'logs';
 
 export const AdminPage: React.FC = () => {
   const { user } = useAuth();
@@ -31,6 +32,7 @@ export const AdminPage: React.FC = () => {
 
   // Data state
   const [videos, setVideos] = useState<AdminVideoItem[]>([]);
+  const [racks, setRacks] = useState<RackItem[]>([]);
   const [codes, setCodes] = useState<ActivationCodeItem[]>([]);
   const [users, setUsers] = useState<AdminUserItem[]>([]);
   const [admins, setAdmins] = useState<AdminUserItem[]>([]);
@@ -47,6 +49,22 @@ export const AdminPage: React.FC = () => {
   const [creatingAdmin, setCreatingAdmin] = useState(false);
   const [togglingAdminId, setTogglingAdminId] = useState<string | null>(null);
 
+
+  // Modal Change Username (Super Admin only)
+  const [targetUserForUsername, setTargetUserForUsername] = useState<AdminUserItem | null>(null);
+  const [newTargetUsername, setNewTargetUsername] = useState('');
+  const [updatingUsername, setUpdatingUsername] = useState(false);
+
+  // Modal Reset Password (Super Admin only)
+  const [targetUserForPasswordReset, setTargetUserForPasswordReset] = useState<AdminUserItem | null>(null);
+  const [newTargetPassword, setNewTargetPassword] = useState('');
+  const [resettingUserPassword, setResettingUserPassword] = useState(false);
+
+  // Modal Delete Account (Super Admin only)
+  const [targetUserForDeletion, setTargetUserForDeletion] = useState<AdminUserItem | null>(null);
+  const [confirmDeleteUsername, setConfirmDeleteUsername] = useState('');
+  const [deletingAccount, setDeletingAccount] = useState(false);
+
   // Modal Create Member Langsung (Super Admin only)
   const [showCreateMemberModal, setShowCreateMemberModal] = useState(false);
   const [newMemberUsername, setNewMemberUsername] = useState('');
@@ -60,6 +78,7 @@ export const AdminPage: React.FC = () => {
   const [uploadProductName, setUploadProductName] = useState('');
   const [uploadProductUrl, setUploadProductUrl] = useState('');
   const [uploadDescription, setUploadDescription] = useState('');
+  const [uploadRackId, setUploadRackId] = useState('');
   const [uploadStatus, setUploadStatus] = useState<'active' | 'inactive'>('active');
   const [uploading, setUploading] = useState(false);
 
@@ -69,12 +88,30 @@ export const AdminPage: React.FC = () => {
   const [editProductName, setEditProductName] = useState('');
   const [editProductUrl, setEditProductUrl] = useState('');
   const [editDescription, setEditDescription] = useState('');
+  const [editRackId, setEditRackId] = useState('');
   const [editStatus, setEditStatus] = useState<'active' | 'inactive'>('active');
   const [savingEdit, setSavingEdit] = useState(false);
 
   // Modal Delete Video
   const [deletingVideo, setDeletingVideo] = useState<AdminVideoItem | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Rack Modals
+  const [showCreateRackModal, setShowCreateRackModal] = useState(false);
+  const [newRackName, setNewRackName] = useState('');
+  const [creatingRack, setCreatingRack] = useState(false);
+
+  const [editingRack, setEditingRack] = useState<RackItem | null>(null);
+  const [editRackName, setEditRackName] = useState('');
+  const [savingRack, setSavingRack] = useState(false);
+
+  const [deletingRack, setDeletingRack] = useState<RackItem | null>(null);
+  const [deletingRackState, setDeletingRackState] = useState(false);
+
+  // Move Video Rack Modal
+  const [movingVideo, setMovingVideo] = useState<AdminVideoItem | null>(null);
+  const [targetRackId, setTargetRackId] = useState('');
+  const [movingVideoState, setMovingVideoState] = useState(false);
 
   // Modal Create Activation Code
   const [showCreateCodeModal, setShowCreateCodeModal] = useState(false);
@@ -109,18 +146,25 @@ export const AdminPage: React.FC = () => {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const [videosRes, codesRes, usersRes, logsRes, shopeeRes] = await Promise.all([
+      const [videosRes, codesRes, usersRes, logsRes, shopeeRes, racksRes] = await Promise.all([
         adminApi.listVideos(),
         adminApi.listActivationCodes(),
         adminApi.listUsers(),
         adminApi.listAuditLogs(),
-        shopeeApi.listAdminRequests('all')
+        shopeeApi.listAdminRequests('all'),
+        adminApi.listRacks()
       ]);
       setVideos(videosRes.videos || []);
       setCodes(codesRes.codes || []);
       setUsers(usersRes.users || []);
       setLogs(logsRes.logs || []);
       setShopeeRequests(shopeeRes.requests || []);
+      setRacks(racksRes.racks || []);
+
+      const defRack = (racksRes.racks || []).find((r) => r.is_default);
+      if (defRack) {
+        setUploadRackId((prev) => prev || defRack.id);
+      }
 
       if (user?.role === 'super_admin') {
         try {
@@ -187,6 +231,7 @@ export const AdminPage: React.FC = () => {
         product_name: uploadProductName.trim(),
         product_url: uploadProductUrl.trim(),
         description: uploadDescription.trim() || undefined,
+        rack_id: uploadRackId || undefined,
         status: uploadStatus
       });
       setActionSuccessMsg('Video berhasil diunggah ke Cloudflare R2 privat!');
@@ -196,6 +241,8 @@ export const AdminPage: React.FC = () => {
       setUploadProductName('');
       setUploadProductUrl('');
       setUploadDescription('');
+      const defRack = racks.find((r) => r.is_default);
+      setUploadRackId(defRack ? defRack.id : '');
       setUploadStatus('active');
       await fetchAllData();
     } catch (err) {
@@ -215,6 +262,7 @@ export const AdminPage: React.FC = () => {
     setEditProductName(video.product_name);
     setEditProductUrl(video.product_url);
     setEditDescription(video.description || '');
+    setEditRackId(video.rack_id || '');
     setEditStatus(video.status);
   };
 
@@ -230,6 +278,7 @@ export const AdminPage: React.FC = () => {
         product_name: editProductName.trim(),
         product_url: editProductUrl.trim(),
         description: editDescription.trim() || undefined,
+        rack_id: editRackId || undefined,
         status: editStatus
       });
       setActionSuccessMsg('Metadata video berhasil diperbarui!');
@@ -406,6 +455,180 @@ export const AdminPage: React.FC = () => {
       }
     } finally {
       setCreatingMember(false);
+    }
+  };
+
+
+  const handleUpdateUsernameSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!targetUserForUsername || !newTargetUsername.trim()) return;
+
+    setUpdatingUsername(true);
+    setErrorMsg(null);
+    try {
+      await superAdminApi.updateUsername(targetUserForUsername.id, {
+        new_username: newTargetUsername.trim()
+      });
+      setActionSuccessMsg(`Username berhasil diubah dari "${targetUserForUsername.username}" menjadi "${newTargetUsername.trim()}".`);
+      setTargetUserForUsername(null);
+      setNewTargetUsername('');
+      await fetchAllData();
+    } catch (err) {
+      if (err instanceof ApiClientError) {
+        setErrorMsg(err.message);
+      } else {
+        setErrorMsg('Gagal mengubah username.');
+      }
+    } finally {
+      setUpdatingUsername(false);
+    }
+  };
+
+  const handleResetUserPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!targetUserForPasswordReset || !newTargetPassword) return;
+
+    setResettingUserPassword(true);
+    setErrorMsg(null);
+    try {
+      await superAdminApi.resetUserPassword(targetUserForPasswordReset.id, {
+        new_password: newTargetPassword
+      });
+      setActionSuccessMsg(`Password pengguna "${targetUserForPasswordReset.username}" berhasil direset. Sesi aktif pengguna telah dicabut.`);
+      setTargetUserForPasswordReset(null);
+      setNewTargetPassword('');
+      await fetchAllData();
+    } catch (err) {
+      if (err instanceof ApiClientError) {
+        setErrorMsg(err.message);
+      } else {
+        setErrorMsg('Gagal mereset password pengguna.');
+      }
+    } finally {
+      setResettingUserPassword(false);
+    }
+  };
+
+  const handleDeleteAccountSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!targetUserForDeletion || !confirmDeleteUsername.trim()) return;
+    if (confirmDeleteUsername.trim() !== targetUserForDeletion.username) {
+      setErrorMsg('Konfirmasi username tidak cocok dengan akun yang dipilih.');
+      return;
+    }
+
+    setDeletingAccount(true);
+    setErrorMsg(null);
+    try {
+      await superAdminApi.deleteAccount(targetUserForDeletion.id, {
+        confirm_username: confirmDeleteUsername.trim()
+      });
+      setActionSuccessMsg(`Akun "${targetUserForDeletion.username}" (${targetUserForDeletion.role}) berhasil dihapus permanen secara aman.`);
+      setTargetUserForDeletion(null);
+      setConfirmDeleteUsername('');
+      await fetchAllData();
+    } catch (err) {
+      if (err instanceof ApiClientError) {
+        setErrorMsg(err.message);
+      } else {
+        setErrorMsg('Gagal menghapus akun.');
+      }
+    } finally {
+      setDeletingAccount(false);
+    }
+  };
+
+  const handleCreateRackSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newRackName.trim()) return;
+
+    setCreatingRack(true);
+    setErrorMsg(null);
+    try {
+      await adminApi.createRack({
+        name: newRackName.trim()
+      });
+      setActionSuccessMsg(`Rak "${newRackName.trim()}" berhasil dibuat!`);
+      setShowCreateRackModal(false);
+      setNewRackName('');
+      await fetchAllData();
+    } catch (err) {
+      if (err instanceof ApiClientError) {
+        setErrorMsg(err.message);
+      } else {
+        setErrorMsg('Gagal membuat rak baru.');
+      }
+    } finally {
+      setCreatingRack(false);
+    }
+  };
+
+  const handleUpdateRackSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingRack || !editRackName.trim()) return;
+
+    setSavingRack(true);
+    setErrorMsg(null);
+    try {
+      await adminApi.updateRack(editingRack.id, {
+        name: editRackName.trim()
+      });
+      setActionSuccessMsg(`Rak "${editRackName.trim()}" berhasil diperbarui!`);
+      setEditingRack(null);
+      await fetchAllData();
+    } catch (err) {
+      if (err instanceof ApiClientError) {
+        setErrorMsg(err.message);
+      } else {
+        setErrorMsg('Gagal memperbarui data rak.');
+      }
+    } finally {
+      setSavingRack(false);
+    }
+  };
+
+  const handleDeleteRackSubmit = async () => {
+    if (!deletingRack) return;
+
+    setDeletingRackState(true);
+    setErrorMsg(null);
+    try {
+      const res = await adminApi.deleteRack(deletingRack.id);
+      setActionSuccessMsg(res.message || `Rak "${deletingRack.name}" berhasil dihapus.`);
+      setDeletingRack(null);
+      await fetchAllData();
+    } catch (err) {
+      if (err instanceof ApiClientError) {
+        setErrorMsg(err.message);
+      } else {
+        setErrorMsg('Gagal menghapus rak.');
+      }
+    } finally {
+      setDeletingRackState(false);
+    }
+  };
+
+  const handleMoveVideoRackSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!movingVideo || !targetRackId) return;
+
+    setMovingVideoState(true);
+    setErrorMsg(null);
+    try {
+      await adminApi.moveVideoRack(movingVideo.id, {
+        target_rack_id: targetRackId
+      });
+      setActionSuccessMsg(`Video "${movingVideo.title}" berhasil dipindahkan ke rak tujuan!`);
+      setMovingVideo(null);
+      await fetchAllData();
+    } catch (err) {
+      if (err instanceof ApiClientError) {
+        setErrorMsg(err.message);
+      } else {
+        setErrorMsg('Gagal memindahkan video ke rak.');
+      }
+    } finally {
+      setMovingVideoState(false);
     }
   };
 
@@ -602,6 +825,12 @@ export const AdminPage: React.FC = () => {
           Katalog Video ({videos.length})
         </button>
         <button
+          className={`tab-btn ${activeTab === 'racks' ? 'active' : ''}`}
+          onClick={() => setActiveTab('racks')}
+        >
+          Rak Video ({racks.length})
+        </button>
+        <button
           className={`tab-btn ${activeTab === 'codes' ? 'active' : ''}`}
           onClick={() => setActiveTab('codes')}
         >
@@ -649,6 +878,15 @@ export const AdminPage: React.FC = () => {
               <div className="stat-label">Total Video di R2</div>
               <div className="stat-desc">
                 {videos.filter((v) => v.status === 'active').length} aktif / {videos.filter((v) => v.status === 'inactive').length} nonaktif
+              </div>
+            </div>
+
+            <div className="stat-card">
+              <span className="stat-icon">📁</span>
+              <div className="stat-value">{racks.length}</div>
+              <div className="stat-label">Kategori / Rak Video</div>
+              <div className="stat-desc">
+                {racks.filter((r) => !r.is_default).length} kustom / 1 bawaan sistem
               </div>
             </div>
 
@@ -715,6 +953,7 @@ export const AdminPage: React.FC = () => {
                 <tr>
                   <th>Status</th>
                   <th>Judul Video</th>
+                  <th>Rak / Kategori</th>
                   <th>Produk Shopee</th>
                   <th>Ukuran</th>
                   <th>Total Unduhan</th>
@@ -725,7 +964,7 @@ export const AdminPage: React.FC = () => {
               <tbody>
                 {videos.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="text-center text-muted p-6">
+                    <td colSpan={8} className="text-center text-muted p-6">
                       Belum ada video yang diunggah ke penyimpanan R2.
                     </td>
                   </tr>
@@ -742,6 +981,9 @@ export const AdminPage: React.FC = () => {
                         {item.description && (
                           <div className="text-xs text-muted truncate-text">{item.description}</div>
                         )}
+                      </td>
+                      <td>
+                        <span className="badge badge-info text-xs">{item.rack_name || 'General'}</span>
                       </td>
                       <td>
                         <div className="font-medium">{item.product_name}</div>
@@ -770,6 +1012,16 @@ export const AdminPage: React.FC = () => {
                           <Button
                             variant="outline"
                             className="btn-xs"
+                            onClick={() => {
+                              setMovingVideo(item);
+                              setTargetRackId(item.rack_id || '');
+                            }}
+                          >
+                            Pindah Rak
+                          </Button>
+                          <Button
+                            variant="outline"
+                            className="btn-xs"
                             onClick={() => openEditModal(item)}
                           >
                             Edit
@@ -782,6 +1034,95 @@ export const AdminPage: React.FC = () => {
                             Hapus
                           </Button>
                         </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* TAB: MANAJEMEN RAK */}
+      {activeTab === 'racks' && (
+        <div className="tab-pane">
+          <div className="table-header-bar">
+            <div>
+              <h3>Manajemen Rak / Kategori Video ({racks.length})</h3>
+              <p className="text-xs text-muted mt-1">
+                Kelola pengelompokan rak video katalog. Rak "General" adalah rak sistem bawaan yang tidak dapat diubah atau dihapus. Menghapus rak kustom otomatis memindahkan videonya ke General.
+              </p>
+            </div>
+            <Button
+              variant="primary"
+              className="btn-sm"
+              onClick={() => setShowCreateRackModal(true)}
+            >
+              + Tambah Rak Baru
+            </Button>
+          </div>
+
+          <div className="table-responsive">
+            <table className="admin-table">
+              <thead>
+                <tr>
+                  <th>Nama Rak</th>
+                  <th>Jumlah Video</th>
+                  <th>Tipe Rak</th>
+                  <th>Dibuat</th>
+                  <th>Tindakan</th>
+                </tr>
+              </thead>
+              <tbody>
+                {racks.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="text-center text-muted p-6">
+                      Belum ada data rak.
+                    </td>
+                  </tr>
+                ) : (
+                  racks.map((rack) => (
+                    <tr key={rack.id}>
+                      <td className="font-semibold">
+                        <span className="text-base mr-2">📁</span>
+                        {rack.name}
+                      </td>
+                      <td>
+                        <span className="font-semibold">{rack.video_count ?? 0}</span> video
+                      </td>
+                      <td>
+                        {rack.is_default ? (
+                          <Badge variant="warning">Bawaan Sistem</Badge>
+                        ) : (
+                          <Badge variant="info">Kustom</Badge>
+                        )}
+                      </td>
+                      <td className="text-xs">{formatDate(rack.created_at)}</td>
+                      <td>
+                        {rack.is_default ? (
+                          <span className="text-xs text-muted">Terkunci (Sistem)</span>
+                        ) : (
+                          <div className="action-buttons-row">
+                            <Button
+                              variant="outline"
+                              className="btn-xs"
+                              onClick={() => {
+                                setEditingRack(rack);
+                                setEditRackName(rack.name);
+                              }}
+                            >
+                              Ubah
+                            </Button>
+                            <Button
+                              variant="danger"
+                              className="btn-xs"
+                              onClick={() => setDeletingRack(rack)}
+                            >
+                              Hapus
+                            </Button>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   ))
@@ -943,22 +1284,60 @@ export const AdminPage: React.FC = () => {
                       </td>
                       <td>{formatDate(item.device_last_seen_at || item.created_at)}</td>
                       <td>
-                        {item.role === 'super_admin' ? (
-                          <span className="text-xs text-muted">Multi-Perangkat (Kebal Reset)</span>
-                        ) : item.role === 'admin' && user?.role !== 'super_admin' ? (
-                          <span className="text-xs text-muted">Khusus Super Admin</span>
-                        ) : (
-                          <Button
-                            variant="outline"
-                            className="btn-xs"
-                            onClick={() => {
-                              setSelectedUserForReset(item);
-                              setResetReason('');
-                            }}
-                          >
-                            Terbitkan Kode Reset
-                          </Button>
-                        )}
+                        <div className="action-buttons-row">
+                          {item.role === 'super_admin' ? (
+                            <span className="text-xs text-muted">Multi-Perangkat</span>
+                          ) : item.role === 'admin' && user?.role !== 'super_admin' ? (
+                            <span className="text-xs text-muted">Khusus Super Admin</span>
+                          ) : (
+                            <Button
+                              variant="outline"
+                              className="btn-xs"
+                              onClick={() => {
+                                setSelectedUserForReset(item);
+                                setResetReason('');
+                              }}
+                            >
+                              Reset Perangkat
+                            </Button>
+                          )}
+                          {user?.role === 'super_admin' && (
+                            <>
+                              <Button
+                                variant="outline"
+                                className="btn-xs"
+                                onClick={() => {
+                                  setTargetUserForUsername(item);
+                                  setNewTargetUsername(item.username);
+                                }}
+                              >
+                                Ganti Username
+                              </Button>
+                              <Button
+                                variant="outline"
+                                className="btn-xs"
+                                onClick={() => {
+                                  setTargetUserForPasswordReset(item);
+                                  setNewTargetPassword('');
+                                }}
+                              >
+                                Reset Password
+                              </Button>
+                              {item.role !== 'super_admin' && (
+                                <Button
+                                  variant="danger"
+                                  className="btn-xs"
+                                  onClick={() => {
+                                    setTargetUserForDeletion(item);
+                                    setConfirmDeleteUsername('');
+                                  }}
+                                >
+                                  Hapus
+                                </Button>
+                              )}
+                            </>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -1127,20 +1506,22 @@ export const AdminPage: React.FC = () => {
       {/* TAB 5: MANAJEMEN ADMIN (SUPER ADMIN ONLY) */}
       {activeTab === 'admins' && user?.role === 'super_admin' && (
         <div className="tab-pane">
-          <div className="table-header-bar">
+          <div className="table-header-bar flex flex-wrap justify-between items-center gap-4">
             <div>
               <h3>Manajemen Akun Administrator ({admins.length})</h3>
               <p className="text-xs text-muted mt-1">
                 Kelola akun Administrator operasional untuk mengunggah video, memantau katalog, dan mereset perangkat member.
               </p>
             </div>
-            <Button
-              variant="primary"
-              className="btn-sm"
-              onClick={() => setShowCreateAdminModal(true)}
-            >
-              + Tambah Admin Baru
-            </Button>
+            <div>
+              <Button
+                variant="primary"
+                className="btn-sm"
+                onClick={() => setShowCreateAdminModal(true)}
+              >
+                + Tambah Admin Baru
+              </Button>
+            </div>
           </div>
 
           <div className="table-responsive">
@@ -1203,6 +1584,38 @@ export const AdminPage: React.FC = () => {
                           >
                             Reset Perangkat
                           </Button>
+                          <Button
+                            variant="outline"
+                            className="btn-xs"
+                            onClick={() => {
+                              setTargetUserForUsername(item);
+                              setNewTargetUsername(item.username);
+                            }}
+                          >
+                            Ganti Username
+                          </Button>
+                          <Button
+                            variant="outline"
+                            className="btn-xs"
+                            onClick={() => {
+                              setTargetUserForPasswordReset(item);
+                              setNewTargetPassword('');
+                            }}
+                          >
+                            Reset Password
+                          </Button>
+                          {item.id !== user?.id && (
+                            <Button
+                              variant="danger"
+                              className="btn-xs"
+                              onClick={() => {
+                                setTargetUserForDeletion(item);
+                                setConfirmDeleteUsername('');
+                              }}
+                            >
+                              Hapus
+                            </Button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -1351,6 +1764,22 @@ export const AdminPage: React.FC = () => {
           </div>
 
           <div className="form-group">
+            <label className="form-label">Rak / Kategori Video</label>
+            <select
+              className="form-input"
+              value={uploadRackId}
+              onChange={(e) => setUploadRackId(e.target.value)}
+              disabled={uploading}
+            >
+              {racks.map((rack) => (
+                <option key={rack.id} value={rack.id}>
+                  {rack.name} {rack.is_default ? '(Bawaan Sistem)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="form-group">
             <label className="form-label">Status Tayang</label>
             <select
               className="form-input"
@@ -1434,6 +1863,22 @@ export const AdminPage: React.FC = () => {
               onChange={(e) => setEditDescription(e.target.value)}
               disabled={savingEdit}
             />
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">Rak / Kategori Video</label>
+            <select
+              className="form-input"
+              value={editRackId}
+              onChange={(e) => setEditRackId(e.target.value)}
+              disabled={savingEdit}
+            >
+              {racks.map((rack) => (
+                <option key={rack.id} value={rack.id}>
+                  {rack.name} {rack.is_default ? '(Bawaan Sistem)' : ''}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div className="form-group">
@@ -1815,6 +2260,303 @@ export const AdminPage: React.FC = () => {
             </div>
           </form>
         )}
+      </Modal>
+
+      {/* MODAL: UBAH USERNAME PENGGUNA (SUPER ADMIN) */}
+      <Modal
+        isOpen={!!targetUserForUsername}
+        onClose={() => setTargetUserForUsername(null)}
+        title={`Ubah Username Pengguna: ${targetUserForUsername?.username}`}
+      >
+        <form onSubmit={handleUpdateUsernameSubmit} className="space-y-4">
+          <Input
+            label="Username Baru"
+            id="target-new-username"
+            name="new_username"
+            type="text"
+            placeholder="Username baru"
+            value={newTargetUsername}
+            onChange={(e) => setNewTargetUsername(e.target.value)}
+            required
+            helperText="Alfanumerik atau underscore (3-30 karakter). Perubahan akan dicatat dalam audit log."
+          />
+          <div className="modal-actions-cluster mt-4">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setTargetUserForUsername(null)}
+              disabled={updatingUsername}
+            >
+              Batal
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              loading={updatingUsername}
+              loadingText="Menyimpan..."
+            >
+              Simpan Username Baru
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* MODAL: RESET PASSWORD PENGGUNA (SUPER ADMIN) */}
+      <Modal
+        isOpen={!!targetUserForPasswordReset}
+        onClose={() => setTargetUserForPasswordReset(null)}
+        title={`Reset Password Pengguna: ${targetUserForPasswordReset?.username}`}
+      >
+        <form onSubmit={handleResetUserPasswordSubmit} className="space-y-4">
+          <div className="alert-box alert-warning">
+            <p className="text-xs">
+              Mereset password akan <strong>mencabut seluruh sesi login aktif</strong> pengguna ini di semua perangkat untuk memverifikasi ulang identitas.
+            </p>
+          </div>
+          <Input
+            label="Password Baru Pengguna"
+            id="target-new-password"
+            name="new_password"
+            type="password"
+            placeholder="Minimal 8 karakter"
+            value={newTargetPassword}
+            onChange={(e) => setNewTargetPassword(e.target.value)}
+            required
+            helperText="Minimal 8 karakter dan maksimal 64 karakter."
+          />
+          <div className="modal-actions-cluster mt-4">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setTargetUserForPasswordReset(null)}
+              disabled={resettingUserPassword}
+            >
+              Batal
+            </Button>
+            <Button
+              type="submit"
+              variant="danger"
+              loading={resettingUserPassword}
+              loadingText="Mereset Password..."
+            >
+              Reset Password & Cabut Sesi
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* MODAL: HAPUS AKUN (SUPER ADMIN) */}
+      <Modal
+        isOpen={!!targetUserForDeletion}
+        onClose={() => {
+          setTargetUserForDeletion(null);
+          setConfirmDeleteUsername('');
+        }}
+        title={`Hapus Akun Pengguna: ${targetUserForDeletion?.username}`}
+      >
+        <form onSubmit={handleDeleteAccountSubmit} className="space-y-4">
+          <div className="alert-box alert-danger">
+            <p className="text-xs font-semibold">Tindakan ini tidak dapat dibatalkan!</p>
+            <p className="text-xs mt-1">
+              Akun <strong>{targetUserForDeletion?.username}</strong> ({targetUserForDeletion?.role}) akan dihapus permanen. Seluruh video dan kode aktivasi yang pernah dibuat pengguna ini akan otomatis dialihkan kepemilikannya ke akun Anda agar aman dan tidak hilang.
+            </p>
+          </div>
+          <Input
+            label={`Ketik "${targetUserForDeletion?.username}" untuk mengonfirmasi`}
+            id="confirm-delete-username"
+            name="confirm_username"
+            type="text"
+            placeholder={targetUserForDeletion?.username || ''}
+            value={confirmDeleteUsername}
+            onChange={(e) => setConfirmDeleteUsername(e.target.value)}
+            required
+          />
+          <div className="modal-actions-cluster mt-4">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setTargetUserForDeletion(null);
+                setConfirmDeleteUsername('');
+              }}
+              disabled={deletingAccount}
+            >
+              Batal
+            </Button>
+            <Button
+              type="submit"
+              variant="danger"
+              disabled={confirmDeleteUsername !== targetUserForDeletion?.username || deletingAccount}
+              loading={deletingAccount}
+              loadingText="Menghapus..."
+            >
+              Hapus Akun Permanen
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* MODAL: BUAT RAK BARU */}
+      <Modal
+        isOpen={showCreateRackModal}
+        onClose={() => setShowCreateRackModal(false)}
+        title="Tambah Rak Video Baru"
+      >
+        <form onSubmit={handleCreateRackSubmit} className="space-y-4">
+          <Input
+            label="Nama Rak"
+            id="rack-name"
+            name="name"
+            type="text"
+            placeholder="Contoh: Elektronik & Gadget"
+            value={newRackName}
+            onChange={(e) => setNewRackName(e.target.value)}
+            required
+            helperText="1-50 karakter."
+          />
+          <div className="modal-actions-cluster mt-4">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setShowCreateRackModal(false)}
+              disabled={creatingRack}
+            >
+              Batal
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              loading={creatingRack}
+              loadingText="Membuat Rak..."
+            >
+              Buat Rak Baru
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* MODAL: EDIT RAK */}
+      <Modal
+        isOpen={!!editingRack}
+        onClose={() => setEditingRack(null)}
+        title={`Ubah Rak: ${editingRack?.name}`}
+      >
+        <form onSubmit={handleUpdateRackSubmit} className="space-y-4">
+          <Input
+            label="Nama Rak"
+            id="edit-rack-name"
+            name="name"
+            type="text"
+            value={editRackName}
+            onChange={(e) => setEditRackName(e.target.value)}
+            required
+            helperText="1-50 karakter."
+          />
+          <div className="modal-actions-cluster mt-4">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setEditingRack(null)}
+              disabled={savingRack}
+            >
+              Batal
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              loading={savingRack}
+              loadingText="Menyimpan..."
+            >
+              Simpan Perubahan
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* MODAL: HAPUS RAK */}
+      <Modal
+        isOpen={!!deletingRack}
+        onClose={() => setDeletingRack(null)}
+        title="Konfirmasi Hapus Rak Video"
+      >
+        <div className="space-y-4">
+          <p>
+            Apakah Anda yakin ingin menghapus rak <strong>"{deletingRack?.name}"</strong>?
+          </p>
+          <div className="alert-box alert-warning">
+            <p className="text-xs font-semibold">Video Anda Aman</p>
+            <p className="text-xs mt-1">
+              Rak ini saat ini berisi <strong>{deletingRack?.video_count ?? 0} video</strong>. Menghapus rak ini <strong>TIDAK AKAN</strong> menghapus videonya. Seluruh video akan otomatis dialihkan ke rak bawaan <strong>General</strong>.
+            </p>
+          </div>
+          <div className="modal-actions-cluster mt-4">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setDeletingRack(null)}
+              disabled={deletingRackState}
+            >
+              Batal
+            </Button>
+            <Button
+              type="button"
+              variant="danger"
+              onClick={handleDeleteRackSubmit}
+              loading={deletingRackState}
+              loadingText="Menghapus Rak..."
+            >
+              Ya, Hapus Rak & Pindahkan Video
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* MODAL: PINDAH RAK VIDEO */}
+      <Modal
+        isOpen={!!movingVideo}
+        onClose={() => setMovingVideo(null)}
+        title={`Pindahkan Rak Video: ${movingVideo?.title}`}
+      >
+        <form onSubmit={handleMoveVideoRackSubmit} className="space-y-4">
+          <p className="text-sm text-muted">
+            Pilih rak tujuan untuk video <strong>"{movingVideo?.title}"</strong>:
+          </p>
+          <div className="form-group">
+            <label className="form-label">Rak Tujuan</label>
+            <select
+              className="form-input"
+              value={targetRackId}
+              onChange={(e) => setTargetRackId(e.target.value)}
+              required
+            >
+              <option value="">-- Pilih Rak Tujuan --</option>
+              {racks.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name} {r.is_default ? '(Bawaan Sistem)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="modal-actions-cluster mt-4">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setMovingVideo(null)}
+              disabled={movingVideoState}
+            >
+              Batal
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              disabled={!targetRackId || targetRackId === movingVideo?.rack_id || movingVideoState}
+              loading={movingVideoState}
+              loadingText="Memindahkan..."
+            >
+              Pindahkan Video
+            </Button>
+          </div>
+        </form>
       </Modal>
     </div>
   );

@@ -1,5 +1,13 @@
 import { Env } from './types';
-import { handleActivate, handleLogin, handleResetDevice, handleLogout, handleMe } from './auth';
+import {
+  handleActivate,
+  handleLogin,
+  handleResetDevice,
+  handleLogout,
+  handleMe,
+  handleChangePassword,
+  handleChangeUsername
+} from './auth';
 import {
   handleCreateActivationCode,
   handleListActivationCodes,
@@ -9,7 +17,16 @@ import {
   handleListAdmins,
   handleCreateAdmin,
   handleUpdateAdminStatus,
-  handleCreateMember
+  handleCreateMember,
+  handleDeleteAccount,
+  handleResetUserPassword,
+  handleSuperAdminUpdateUsername,
+  handleListRacks,
+  handleAdminListRacks,
+  handleCreateRack,
+  handleUpdateRack,
+  handleDeleteRack,
+  handleMoveVideoRack
 } from './admin';
 import {
   handleListVideos,
@@ -77,6 +94,16 @@ export default {
       return handleMe(request, env.DB);
     }
 
+    if (path === '/api/auth/change-password' && method === 'POST') {
+      if (!env.DB) return databaseUnavailableResponse();
+      return handleChangePassword(request, env.DB);
+    }
+
+    if (path === '/api/auth/change-username' && method === 'POST') {
+      if (!env.DB) return databaseUnavailableResponse();
+      return handleChangeUsername(request, env.DB);
+    }
+
     // 3. Routing API Administratif (Admin Only)
     if (path === '/api/admin/activation-codes') {
       if (!env.DB) return databaseUnavailableResponse();
@@ -120,7 +147,55 @@ export default {
       return handleCreateMember(request, env.DB);
     }
 
-    // 4. Routing API Video (Pengguna & Admin)
+    const superAdminUserResetPassMatch = path.match(/^\/api\/super-admin\/users\/([^/]+)\/reset-password$/);
+    if (superAdminUserResetPassMatch && method === 'POST') {
+      if (!env.DB) return databaseUnavailableResponse();
+      const targetUserId = decodeURIComponent(superAdminUserResetPassMatch[1]);
+      return handleResetUserPassword(request, env.DB, targetUserId);
+    }
+
+    const superAdminUserUsernameMatch = path.match(/^\/api\/super-admin\/users\/([^/]+)\/username$/);
+    if (superAdminUserUsernameMatch && (method === 'PATCH' || method === 'PUT')) {
+      if (!env.DB) return databaseUnavailableResponse();
+      const targetUserId = decodeURIComponent(superAdminUserUsernameMatch[1]);
+      return handleSuperAdminUpdateUsername(request, env.DB, targetUserId);
+    }
+
+    const superAdminUserDeleteMatch = path.match(/^\/api\/super-admin\/users\/([^/]+)$/);
+    if (superAdminUserDeleteMatch && method === 'DELETE') {
+      if (!env.DB) return databaseUnavailableResponse();
+      const targetUserId = decodeURIComponent(superAdminUserDeleteMatch[1]);
+      return handleDeleteAccount(request, env.DB, targetUserId);
+    }
+
+    // 5. Routing API Rak (Kategori Video)
+    if (path === '/api/racks' && method === 'GET') {
+      if (!env.DB) return databaseUnavailableResponse();
+      return handleListRacks(request, env.DB);
+    }
+
+    if (path === '/api/admin/racks') {
+      if (!env.DB) return databaseUnavailableResponse();
+      if (method === 'GET') return handleAdminListRacks(request, env.DB);
+      if (method === 'POST') return handleCreateRack(request, env.DB);
+    }
+
+    const rackMatch = path.match(/^\/api\/admin\/racks\/([^/]+)$/);
+    if (rackMatch) {
+      if (!env.DB) return databaseUnavailableResponse();
+      const rackId = decodeURIComponent(rackMatch[1]);
+      if (method === 'PUT' || method === 'PATCH') return handleUpdateRack(request, env.DB, rackId);
+      if (method === 'DELETE') return handleDeleteRack(request, env.DB, rackId);
+    }
+
+    const videoRackMoveMatch = path.match(/^\/api\/admin\/videos\/([^/]+)\/rack$/);
+    if (videoRackMoveMatch && (method === 'PATCH' || method === 'PUT')) {
+      if (!env.DB) return databaseUnavailableResponse();
+      const videoId = decodeURIComponent(videoRackMoveMatch[1]);
+      return handleMoveVideoRack(request, env.DB, videoId);
+    }
+
+    // 6. Routing API Video (Pengguna & Admin)
     if (path === '/api/videos' && method === 'GET') {
       if (!env.DB) return databaseUnavailableResponse();
       return handleListVideos(request, env.DB);
@@ -154,7 +229,7 @@ export default {
       if (method === 'DELETE') return handleAdminDeleteVideo(request, env, videoId);
     }
 
-    // 5. Routing API Manajemen Akun Shopee (Member)
+    // 7. Routing API Manajemen Akun Shopee (Member)
     if (path === '/api/member/shopee-account/initial' && method === 'POST') {
       if (!env.DB) return databaseUnavailableResponse();
       return handleInitialShopeeLink(request, env.DB);
@@ -166,7 +241,7 @@ export default {
       if (method === 'GET') return handleListMemberShopeeRequests(request, env.DB);
     }
 
-    // 6. Routing API Manajemen Akun Shopee (Admin)
+    // 8. Routing API Manajemen Akun Shopee (Admin)
     if (path === '/api/admin/shopee-requests' && method === 'GET') {
       if (!env.DB) return databaseUnavailableResponse();
       return handleAdminListShopeeRequests(request, env.DB);

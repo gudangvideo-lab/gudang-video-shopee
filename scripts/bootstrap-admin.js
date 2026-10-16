@@ -79,7 +79,7 @@ export async function generateBootstrapAdminSql(username, password) {
   const { hash, salt } = await hashPassword(password);
 
   const sqlStatements = [
-    `INSERT INTO users (id, username, password_hash, password_salt, role, status) SELECT '${adminId}', '${username.trim()}', '${hash}', '${salt}', 'super_admin', 'active' WHERE (SELECT COUNT(*) FROM users WHERE role = 'super_admin') < 3 AND NOT EXISTS (SELECT 1 FROM users WHERE username = '${username.trim()}');`,
+    `INSERT INTO users (id, username, password_hash, password_salt, role, status) SELECT '${adminId}', '${username.trim()}', '${hash}', '${salt}', 'super_admin', 'active' WHERE (SELECT COUNT(*) FROM users WHERE role = 'super_admin') < 2 AND NOT EXISTS (SELECT 1 FROM users WHERE username = '${username.trim()}');`,
     `INSERT INTO audit_logs (id, admin_id, action, target_user_id, details, ip_address, user_agent) SELECT '${auditId}', '${adminId}', 'ACTIVATE_USER', '${adminId}', 'Bootstrap Super Administrator', '127.0.0.1', 'CLI-Bootstrap' WHERE EXISTS (SELECT 1 FROM users WHERE id = '${adminId}');`
   ];
 
@@ -284,7 +284,7 @@ async function main() {
     console.log('----------------------------------------------------------------');
     console.log('Jalankan perintah berikut pada database lokal atau environment Anda:');
     console.log('\nwrangler d1 execute DB --local --command "' + result.fullSql.replace(/\n/g, ' ') + '"\n');
-    console.log('Catatan: Jika kuota 3 Super Admin sudah penuh atau username sudah ada,');
+    console.log('Catatan: Jika kuota 2 Super Admin sudah penuh atau username sudah ada,');
     console.log('perintah secara otomatis tidak akan memasukkan baris baru (0 rows inserted).');
   } catch (err) {
     console.error('ERROR:', err.message);

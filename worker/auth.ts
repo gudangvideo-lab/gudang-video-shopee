@@ -768,3 +768,206 @@ export async function handleMe(request: Request, db: D1Database): Promise<Respon
     }
   }, 200);
 }
+
+/**
+ * Endpoint: POST /api/auth/change-password
+ * Mengubah kata sandi akun sendiri setelah memverifikasi kata sandi lama,
+ * mencabut sesi lama, dan menerbitkan sesi baru untuk perangkat aktif.
+ */
+export async function handleChangePassword(request: Request, db: D1Database): Promise<Response> {
+  if (!verifyCsrf(request)) {
+    return jsonResponse({ error: 'CSRF_FORBIDDEN', message: 'Permintaan lintas situs diblokir.' }, 403);
+  }
+
+  const ctx = await validateSession(request, db);
+  if (!ctx) {
+    return jsonResponse({ error: 'UNAUTHORIZED', message: 'Sesi tidak valid atau telah kedaluwarsa.' }, 401);
+  }
+
+  const body = await parseJsonBody(request);
+  if (!body) {
+    return jsonResponse({ error: 'INVALID_JSON', message: 'Payload JSON tidak valid.' }, 400);
+  }
+
+  const { current_password, new_password } = body;
+
+  if (typeof current_password !== 'string' || !current_password) {
+    return jsonResponse({ error: 'MISSING_CURRENT_PASSWORD', message: 'Kata sandi saat ini wajib diisi.' }, 400);
+  }
+
+  if (!isValidPassword(new_password)) {
+    return jsonResponse({
+      error: 'INVALID_PASSWORD',
+      message: 'Kata sandi baru minimal 8 karakter dan maksimal 64 karakter.'
+    }, 400);
+  }
+
+  const userRow = await db
+    .prepare('SELECT id, username, password_hash, password_salt FROM users WHERE id = ?')
+    .bind(ctx.user.id)
+    .first<{ id: string; username: string; password_hash: string; password_salt: string }>();
+
+  if (!userRow) {
+    return jsonResponse({ error: 'USER_NOT_FOUND', message: 'Pengguna tidak ditemukan.' }, 404);
+  }
+
+  const isPasswordValid = await verifyPassword(current_password, userRow.password_hash, userRow.password_salt);
+  if (!isPasswordValid) {
+    return jsonResponse({ error: 'INVALID_CURRENT_PASSWORD', message: 'Kata sandi saat ini tidak sesuai.' }, 400);
+  }
+
+  const { hash: newHash, salt: newSalt } = await hashPassword(new_password);
+  const newSessionId = crypto.randomUUID();
+  const rawSessionToken = generateRandomToken(32);
+  const sessionTokenHash = await sha256(rawSessionToken);
+  const auditId = crypto.randomUUID();
+
+  const ipAddress = request.headers.get('CF-Connecting-IP') || '127.0.0.1';
+  const userAgent = request.headers.get('User-Agent') || 'Unknown';
+
+  await db.batch([
+    // Update hash & salt
+    db.prepare('UPDATE users SET password_hash = ?, password_salt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .bind(newHash, newSalt, ctx.user.id),
+    // Cabut seluruh sesi aktif lama pengguna ini
+    db.prepare('UPDATE user_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL')
+      .bind(ctx.user.id),
+    // Terbitkan sesi baru untuk perangkat saat ini
+    db.prepare(`
+      INSERT INTO user_sessions (id, user_id, device_id, session_token_hash, expires_at)
+      VALUES (?, ?, ?, ?, datetime('now', '+30 days'))
+    `).bind(newSessionId, ctx.user.id, ctx.device.id, sessionTokenHash),
+    // Audit log
+    db.prepare(`
+      INSERT INTO audit_logs (id, admin_id, action, target_user_id, details, ip_address, user_agent)
+      VALUES (?, ?, 'CHANGE_PASSWORD', ?, ?, ?, ?)
+    `).bind(
+      auditId,
+      ctx.user.id,
+      ctx.user.id,
+      `Pengguna ${ctx.user.username} memperbarui kata sandi secara mandiri`,
+      ipAddress,
+      userAgent
+    )
+  ]);
+
+  const response = jsonResponse({
+    status: 'ok',
+    message: 'Kata sandi berhasil diperbarui.'
+  }, 200);
+
+  response.headers.append('Set-Cookie', createSessionCookie(rawSessionToken));
+  return response;
+}
+
+/**
+ * Endpoint: POST /api/auth/change-username
+ * Mengubah nama pengguna akun sendiri setelah memverifikasi kata sandi saat ini.
+ */
+export async function handleChangeUsername(request: Request, db: D1Database): Promise<Response> {
+  if (!verifyCsrf(request)) {
+    return jsonResponse({ error: 'CSRF_FORBIDDEN', message: 'Permintaan lintas situs diblokir.' }, 403);
+  }
+
+  const ctx = await validateSession(request, db);
+  if (!ctx) {
+    return jsonResponse({ error: 'UNAUTHORIZED', message: 'Sesi tidak valid atau telah kedaluwarsa.' }, 401);
+  }
+
+  const body = await parseJsonBody(request);
+  if (!body) {
+    return jsonResponse({ error: 'INVALID_JSON', message: 'Payload JSON tidak valid.' }, 400);
+  }
+
+  const { new_username, current_password } = body;
+
+  if (!isValidUsername(new_username)) {
+    return jsonResponse({
+      error: 'INVALID_USERNAME',
+      message: 'Nama pengguna harus berupa alfanumerik atau underscore sepanjang 3-30 karakter.'
+    }, 400);
+  }
+
+  if (typeof current_password !== 'string' || !current_password) {
+    return jsonResponse({ error: 'MISSING_CURRENT_PASSWORD', message: 'Kata sandi saat ini wajib diisi untuk konfirmasi.' }, 400);
+  }
+
+  const cleanNewUsername = new_username.trim();
+  if (cleanNewUsername.toLowerCase() === ctx.user.username.toLowerCase()) {
+    return jsonResponse({
+      error: 'USERNAME_UNCHANGED',
+      message: 'Nama pengguna baru tidak boleh sama dengan nama pengguna saat ini.'
+    }, 400);
+  }
+
+  // Verifikasi kata sandi saat ini
+  const userRow = await db
+    .prepare('SELECT id, password_hash, password_salt FROM users WHERE id = ?')
+    .bind(ctx.user.id)
+    .first<{ id: string; password_hash: string; password_salt: string }>();
+
+  if (!userRow) {
+    return jsonResponse({ error: 'USER_NOT_FOUND', message: 'Pengguna tidak ditemukan.' }, 404);
+  }
+
+  const isPasswordValid = await verifyPassword(current_password, userRow.password_hash, userRow.password_salt);
+  if (!isPasswordValid) {
+    return jsonResponse({ error: 'INVALID_CURRENT_PASSWORD', message: 'Kata sandi saat ini salah.' }, 400);
+  }
+
+  // Periksa keunikan username baru secara case-insensitive
+  const existingUser = await db
+    .prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE AND id != ?')
+    .bind(cleanNewUsername, ctx.user.id)
+    .first();
+
+  if (existingUser) {
+    return jsonResponse({
+      error: 'USERNAME_TAKEN',
+      message: 'Nama pengguna tersebut sudah digunakan. Silakan pilih nama pengguna lain.'
+    }, 400);
+  }
+
+  const auditId = crypto.randomUUID();
+  const ipAddress = request.headers.get('CF-Connecting-IP') || '127.0.0.1';
+  const userAgent = request.headers.get('User-Agent') || 'Unknown';
+
+  try {
+    await db.batch([
+      db.prepare('UPDATE users SET username = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .bind(cleanNewUsername, ctx.user.id),
+      db.prepare(`
+        INSERT INTO audit_logs (id, admin_id, action, target_user_id, details, ip_address, user_agent)
+        VALUES (?, ?, 'CHANGE_USERNAME', ?, ?, ?, ?)
+      `).bind(
+        auditId,
+        ctx.user.id,
+        ctx.user.id,
+        `Pengguna ${ctx.user.username} mengubah nama pengguna menjadi ${cleanNewUsername}`,
+        ipAddress,
+        userAgent
+      )
+    ]);
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    if (errorMsg.includes('users.username') || errorMsg.includes('uq_users_username')) {
+      return jsonResponse({
+        error: 'USERNAME_TAKEN',
+        message: 'Nama pengguna tersebut sudah digunakan. Silakan pilih nama pengguna lain.'
+      }, 400);
+    }
+    return jsonResponse({ error: 'UPDATE_FAILED', message: 'Gagal memperbarui nama pengguna.' }, 500);
+  }
+
+  return jsonResponse({
+    status: 'ok',
+    message: 'Nama pengguna berhasil diperbarui.',
+    user: {
+      id: ctx.user.id,
+      username: cleanNewUsername,
+      role: ctx.user.role,
+      status: ctx.user.status,
+      shopee_link: ctx.user.shopee_link || null
+    }
+  }, 200);
+}

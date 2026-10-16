@@ -126,19 +126,25 @@ export async function createIsolatedTestDb(): Promise<TestContext> {
   const m3Path = path.join(rootDir, 'migrations', '0003_videos_schema.sql');
   const m4Path = path.join(rootDir, 'migrations', '0004_three_tier_roles.sql');
   const m5Path = path.join(rootDir, 'migrations', '0005_shopee_account_approval.sql');
+  const m6Path = path.join(rootDir, 'migrations', '0006_racks_and_account_management.sql');
+  const m7Path = path.join(rootDir, 'migrations', '0007_max_two_super_admins.sql');
 
   const m1Sql = fs.readFileSync(m1Path, 'utf-8');
   const m2Sql = fs.readFileSync(m2Path, 'utf-8');
   const m3Sql = fs.readFileSync(m3Path, 'utf-8');
   const m4Sql = fs.readFileSync(m4Path, 'utf-8');
   const m5Sql = fs.readFileSync(m5Path, 'utf-8');
+  const m6Sql = fs.readFileSync(m6Path, 'utf-8');
+  const m7Sql = fs.readFileSync(m7Path, 'utf-8');
 
   const statements = [
     ...splitSqlStatements(m1Sql),
     ...splitSqlStatements(m2Sql),
     ...splitSqlStatements(m3Sql),
     ...splitSqlStatements(m4Sql),
-    ...splitSqlStatements(m5Sql)
+    ...splitSqlStatements(m5Sql),
+    ...splitSqlStatements(m6Sql),
+    ...splitSqlStatements(m7Sql)
   ];
 
   for (const stmt of statements) {
@@ -407,4 +413,28 @@ export async function seedTestUser(
     deviceCookie: createDeviceCookie(rawDeviceToken),
     rawDeviceToken
   };
+}
+
+/**
+ * Helper pembungkus untuk membuat member secara cepat dalam pengujian
+ */
+export async function seedTestMember(
+  db: D1Database,
+  username = 'member_tester',
+  password = 'MemberPassword123!'
+): Promise<{
+  id: string;
+  username: string;
+  sessionCookie: string;
+  rawSessionToken: string;
+  deviceCookie: string;
+  rawDeviceToken: string;
+}> {
+  const adminId = crypto.randomUUID();
+  const { hash, salt } = await hashPassword('AdminPass123!');
+  await db
+    .prepare("INSERT INTO users (id, username, password_hash, password_salt, role, status) VALUES (?, ?, ?, ?, 'admin', 'active')")
+    .bind(adminId, `admin_seed_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, hash, salt)
+    .run();
+  return seedTestUser(db, adminId, username, password);
 }

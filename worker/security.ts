@@ -82,6 +82,15 @@ export function isValidPassword(password: unknown): password is string {
   return password.length >= 8 && password.length <= 64;
 }
 
+/**
+ * Validasi nama rak (kategori) video (2 hingga 50 karakter).
+ */
+export function isValidRackName(name: unknown): name is string {
+  if (typeof name !== 'string') return false;
+  const trimmed = name.trim();
+  return trimmed.length >= 2 && trimmed.length <= 50;
+}
+
 const MAX_JSON_BODY_BYTES = 64 * 1024; // 64 KB
 
 /**

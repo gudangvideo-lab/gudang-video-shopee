@@ -3,14 +3,16 @@
  * Komponen navigasi utama aplikasi dengan identitas Shopee Affiliate.
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useRouter, Link } from '../router/Router';
 import { Badge } from './Badge';
+import { AccountSettingsModal } from './AccountSettingsModal';
 
 export const Navbar: React.FC = () => {
   const { user, logout } = useAuth();
   const { path, navigate } = useRouter();
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   const handleLogout = async () => {
     await logout();
@@ -47,8 +49,13 @@ export const Navbar: React.FC = () => {
                 </Link>
               )}
 
-              <div className="user-profile-badge">
-                <span className="username-display">{user.username}</span>
+              <div
+                className="user-profile-badge"
+                style={{ cursor: 'pointer' }}
+                onClick={() => setIsSettingsOpen(true)}
+                title="Klik untuk membuka Pengaturan Akun & Keamanan"
+              >
+                <span className="username-display">⚙️ {user.username}</span>
                 <Badge
                   variant={
                     user.role === 'super_admin'
@@ -68,11 +75,25 @@ export const Navbar: React.FC = () => {
 
               <button
                 type="button"
+                className="btn btn-outline btn-sm"
+                onClick={() => setIsSettingsOpen(true)}
+                title="Pengaturan Akun & Password"
+              >
+                Akun Saya
+              </button>
+
+              <button
+                type="button"
                 className="btn btn-outline btn-sm logout-btn"
                 onClick={handleLogout}
               >
                 Keluar
               </button>
+
+              <AccountSettingsModal
+                isOpen={isSettingsOpen}
+                onClose={() => setIsSettingsOpen(false)}
+              />
             </div>
           ) : (
             <div className="nav-guest-cluster">

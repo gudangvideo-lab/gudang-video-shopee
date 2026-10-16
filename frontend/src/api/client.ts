@@ -37,9 +37,20 @@ import {
   CreateMemberPayload,
   CreateMemberResponse,
   ListShopeeRequestsResponse,
+  ShopeeAccountRequest,
   SubmitShopeeRequestPayload,
   ReviewShopeeRequestPayload,
-  ShopeeAccountRequest
+  User,
+  RackItem,
+  ListRacksResponse,
+  CreateRackPayload,
+  UpdateRackPayload,
+  ChangePasswordPayload,
+  ChangeUsernamePayload,
+  ResetUserPasswordPayload,
+  AdminUpdateUsernamePayload,
+  DeleteAccountPayload,
+  MoveVideoRackPayload
 } from './types';
 
 export class ApiClientError extends Error {
@@ -154,6 +165,26 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({})
     });
+  },
+
+  /**
+   * Mengubah kata sandi mandiri (POST /api/auth/change-password)
+   */
+  async changePassword(payload: ChangePasswordPayload): Promise<{ status: string; message: string }> {
+    return request<{ status: string; message: string }>('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  /**
+   * Mengubah nama pengguna mandiri (POST /api/auth/change-username)
+   */
+  async changeUsername(payload: ChangeUsernamePayload): Promise<{ status: string; message: string; user: User }> {
+    return request<{ status: string; message: string; user: User }>('/api/auth/change-username', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
   }
 };
 
@@ -208,10 +239,62 @@ export const adminApi = {
   /**
    * Mengambil daftar seluruh video (aktif dan nonaktif) untuk admin (GET /api/admin/videos)
    */
-  async listVideos(): Promise<ListAdminVideosResponse> {
-    return request<ListAdminVideosResponse>('/api/admin/videos', {
+  async listVideos(rackId?: string): Promise<ListAdminVideosResponse> {
+    const q = rackId ? `?rack_id=${encodeURIComponent(rackId)}` : '';
+    return request<ListAdminVideosResponse>(`/api/admin/videos${q}`, {
       method: 'GET'
     });
+  },
+
+  /**
+   * Mengambil daftar rak video untuk admin (GET /api/admin/racks)
+   */
+  async listRacks(): Promise<ListRacksResponse> {
+    return request<ListRacksResponse>('/api/admin/racks', {
+      method: 'GET'
+    });
+  },
+
+  /**
+   * Membuat rak video baru (POST /api/admin/racks)
+   */
+  async createRack(payload: CreateRackPayload): Promise<{ status: string; message: string; rack: RackItem }> {
+    return request<{ status: string; message: string; rack: RackItem }>('/api/admin/racks', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  /**
+   * Mengubah nama rak (PATCH /api/admin/racks/:id)
+   */
+  async updateRack(id: string, payload: UpdateRackPayload): Promise<{ status: string; message: string; rack: RackItem }> {
+    return request<{ status: string; message: string; rack: RackItem }>(`/api/admin/racks/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  /**
+   * Menghapus rak video (DELETE /api/admin/racks/:id)
+   */
+  async deleteRack(id: string): Promise<{ status: string; message: string; moved_video_count: number }> {
+    return request<{ status: string; message: string; moved_video_count: number }>(`/api/admin/racks/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    });
+  },
+
+  /**
+   * Memindahkan video ke rak tujuan (PATCH /api/admin/videos/:id/rack)
+   */
+  async moveVideoRack(videoId: string, payload: MoveVideoRackPayload): Promise<{ status: string; message: string; video_id: string; rack_id: string; rack_name: string }> {
+    return request<{ status: string; message: string; video_id: string; rack_id: string; rack_name: string }>(
+      `/api/admin/videos/${encodeURIComponent(videoId)}/rack`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      }
+    );
   },
 
   /**
@@ -228,6 +311,9 @@ export const adminApi = {
     }
     if (payload.status) {
       formData.append('status', payload.status);
+    }
+    if (payload.rack_id) {
+      formData.append('rack_id', payload.rack_id);
     }
     return request<{ status: string; message: string; video: VideoItem }>('/api/admin/videos', {
       method: 'POST',
@@ -305,6 +391,39 @@ export const superAdminApi = {
       method: 'POST',
       body: JSON.stringify(payload)
     });
+  },
+
+  /**
+   * Menghapus akun Admin atau Member secara aman (DELETE /api/super-admin/users/:id)
+   */
+  async deleteAccount(userId: string, payload: DeleteAccountPayload): Promise<{ status: string; message: string }> {
+    return request<{ status: string; message: string }>(`/api/super-admin/users/${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  /**
+   * Reset kata sandi pengguna oleh Super Admin (POST /api/super-admin/users/:id/reset-password)
+   */
+  async resetUserPassword(userId: string, payload: ResetUserPasswordPayload): Promise<{ status: string; message: string }> {
+    return request<{ status: string; message: string }>(`/api/super-admin/users/${encodeURIComponent(userId)}/reset-password`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  /**
+   * Memperbarui username pengguna oleh Super Admin (PATCH /api/super-admin/users/:id/username)
+   */
+  async updateUsername(userId: string, payload: AdminUpdateUsernamePayload): Promise<{ status: string; message: string; user: { id: string; username: string; role: string } }> {
+    return request<{ status: string; message: string; user: { id: string; username: string; role: string } }>(
+      `/api/super-admin/users/${encodeURIComponent(userId)}/username`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      }
+    );
   }
 };
 
@@ -312,8 +431,18 @@ export const videoApi = {
   /**
    * Mengambil daftar katalog video aktif untuk member (GET /api/videos)
    */
-  async listVideos(): Promise<ListVideosResponse> {
-    return request<ListVideosResponse>('/api/videos', {
+  async listVideos(rackId?: string): Promise<ListVideosResponse> {
+    const q = rackId ? `?rack_id=${encodeURIComponent(rackId)}` : '';
+    return request<ListVideosResponse>(`/api/videos${q}`, {
+      method: 'GET'
+    });
+  },
+
+  /**
+   * Mengambil daftar rak video untuk member (GET /api/racks)
+   */
+  async listRacks(): Promise<ListRacksResponse> {
+    return request<ListRacksResponse>('/api/racks', {
       method: 'GET'
     });
   },

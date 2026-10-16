@@ -190,6 +190,8 @@ export interface VideoItem {
   file_size: number;
   content_type: string;
   created_at: string;
+  rack_id?: string | null;
+  rack_name?: string | null;
 }
 
 export interface AdminVideoItem extends VideoItem {
@@ -216,6 +218,7 @@ export interface UploadVideoPayload {
   product_url: string;
   description?: string;
   status?: 'active' | 'inactive';
+  rack_id?: string;
 }
 
 export interface UpdateVideoPayload {
@@ -224,6 +227,7 @@ export interface UpdateVideoPayload {
   product_url?: string;
   description?: string;
   status?: 'active' | 'inactive';
+  rack_id?: string;
 }
 
 export interface ApiErrorResponse {
@@ -260,4 +264,52 @@ export interface SubmitShopeeRequestPayload {
 export interface ReviewShopeeRequestPayload {
   action: 'approve' | 'reject';
   rejection_reason?: string;
+}
+
+export interface RackItem {
+  id: string;
+  name: string;
+  is_default: number;
+  created_at: string;
+  updated_at: string;
+  video_count: number;
+}
+
+export interface ListRacksResponse {
+  status: 'ok';
+  racks: RackItem[];
+}
+
+export interface CreateRackPayload {
+  name: string;
+}
+
+export interface UpdateRackPayload {
+  name: string;
+}
+
+export interface ChangePasswordPayload {
+  current_password: string;
+  new_password: string;
+}
+
+export interface ChangeUsernamePayload {
+  current_password: string;
+  new_username: string;
+}
+
+export interface ResetUserPasswordPayload {
+  new_password: string;
+}
+
+export interface AdminUpdateUsernamePayload {
+  new_username: string;
+}
+
+export interface DeleteAccountPayload {
+  confirm_username: string;
+}
+
+export interface MoveVideoRackPayload {
+  target_rack_id: string;
 }

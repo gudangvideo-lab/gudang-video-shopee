@@ -8,7 +8,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useRouter } from '../router/Router';
 import { videoApi, shopeeApi, ApiClientError } from '../api/client';
-import { VideoItem, ShopeeAccountRequest } from '../api/types';
+import { VideoItem, ShopeeAccountRequest, RackItem } from '../api/types';
 import { Badge } from '../components/Badge';
 import { Button } from '../components/Button';
 import { Alert } from '../components/Alert';
@@ -20,6 +20,8 @@ export const UserDashboardPage: React.FC = () => {
   const { navigate } = useRouter();
 
   const [videos, setVideos] = useState<VideoItem[]>([]);
+  const [racks, setRacks] = useState<RackItem[]>([]);
+  const [selectedRackId, setSelectedRackId] = useState<string>('all');
   const [loadingVideos, setLoadingVideos] = useState<boolean>(true);
   const [videoError, setVideoError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -52,7 +54,16 @@ export const UserDashboardPage: React.FC = () => {
     }
   }, [user?.role]);
 
-  const fetchCatalog = useCallback(async () => {
+  const fetchRacks = useCallback(async () => {
+    try {
+      const res = await videoApi.listRacks();
+      setRacks(res.racks || []);
+    } catch {
+      // Abaikan error background fetch
+    }
+  }, []);
+
+  const fetchCatalog = useCallback(async (rackIdToFilter?: string) => {
     // Jika member belum memiliki shopee_link, tunda memuat katalog
     if (user?.role === 'member' && !user.shopee_link) {
       setLoadingVideos(false);
@@ -62,7 +73,8 @@ export const UserDashboardPage: React.FC = () => {
     setLoadingVideos(true);
     setVideoError(null);
     try {
-      const res = await videoApi.listVideos();
+      const activeFilter = rackIdToFilter !== undefined ? rackIdToFilter : selectedRackId;
+      const res = await videoApi.listVideos(activeFilter !== 'all' ? activeFilter : undefined);
       setVideos(res.videos || []);
     } catch (err) {
       if (err instanceof ApiClientError) {
@@ -77,16 +89,17 @@ export const UserDashboardPage: React.FC = () => {
     } finally {
       setLoadingVideos(false);
     }
-  }, [user?.role, user?.shopee_link, navigate]);
+  }, [user?.role, user?.shopee_link, selectedRackId, navigate]);
 
   useEffect(() => {
     if (user) {
-      fetchCatalog();
+      fetchRacks();
+      fetchCatalog(selectedRackId);
       if (user.role === 'member') {
         fetchShopeeRequests();
       }
     }
-  }, [user, fetchCatalog, fetchShopeeRequests]);
+  }, [user, selectedRackId, fetchRacks, fetchCatalog, fetchShopeeRequests]);
 
   const handleInitialLinkSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -427,13 +440,34 @@ export const UserDashboardPage: React.FC = () => {
               <Button
                 variant="outline"
                 className="btn-sm"
-                onClick={fetchCatalog}
+                onClick={() => fetchCatalog(selectedRackId)}
                 loading={loadingVideos}
                 loadingText="Memuat..."
               >
                 Segarkan
               </Button>
             </div>
+          </div>
+
+          {/* Bilah Filter Kategori / Rak */}
+          <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', margin: '16px 0', paddingBottom: '6px' }}>
+            <button
+              type="button"
+              className={`btn btn-xs ${selectedRackId === 'all' ? 'btn-primary' : 'btn-outline'}`}
+              onClick={() => setSelectedRackId('all')}
+            >
+              Semua Rak ({videos.length})
+            </button>
+            {racks.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                className={`btn btn-xs ${selectedRackId === r.id ? 'btn-primary' : 'btn-outline'}`}
+                onClick={() => setSelectedRackId(r.id)}
+              >
+                📂 {r.name} ({r.video_count})
+              </button>
+            ))}
           </div>
 
           {videoError && (
@@ -474,6 +508,9 @@ export const UserDashboardPage: React.FC = () => {
                     <div className="video-card-badge-row">
                       <span className="file-size-badge">{formatFileSize(video.file_size)}</span>
                       <span className="content-type-badge">{video.content_type.split('/')[1]?.toUpperCase()}</span>
+                      <span style={{ fontSize: '0.75rem', background: '#f3f4f6', color: '#374151', padding: '2px 8px', borderRadius: '4px', fontWeight: 500 }}>
+                        📂 {video.rack_name || 'General'}
+                      </span>
                     </div>
                     <h3 className="video-title">{video.title}</h3>
                   </div>

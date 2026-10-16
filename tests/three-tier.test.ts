@@ -59,36 +59,30 @@ describe('Sistem Hak Akses Tiga Level: Super Admin, Admin, dan Member', () => {
   // 1. INTEGRITAS SKEMA & TRIGGER DATABASE (D1)
   // =========================================================================
   describe('Integritas Skema dan Trigger Database', () => {
-    it('membatasi jumlah Super Admin tepat maksimal 3 akun (trg_limit_super_admin_insert)', async () => {
+    it('membatasi jumlah Super Admin tepat maksimal 2 akun (trg_limit_super_admin_insert)', async () => {
       // Akun 1: dibuat lewat seed
       await seedTestSuperAdmin(ctx.db, 'super_1', 'SuperPass123!');
 
-      // Akun 2 & 3: masukkan manual
+      // Akun 2: masukkan manual
       const { hash: h2, salt: s2 } = await hashPassword('SuperPass123!');
       await ctx.db
         .prepare(`INSERT INTO users (id, username, password_hash, password_salt, role, status) VALUES (?, 'super_2', ?, ?, 'super_admin', 'active')`)
         .bind(crypto.randomUUID(), h2, s2)
         .run();
 
+      // Akun 3: harus ditolak oleh trigger MAX_SUPER_ADMIN_EXCEEDED
       const { hash: h3, salt: s3 } = await hashPassword('SuperPass123!');
-      await ctx.db
-        .prepare(`INSERT INTO users (id, username, password_hash, password_salt, role, status) VALUES (?, 'super_3', ?, ?, 'super_admin', 'active')`)
-        .bind(crypto.randomUUID(), h3, s3)
-        .run();
-
-      // Akun 4: harus ditolak oleh trigger MAX_SUPER_ADMIN_EXCEEDED
-      const { hash: h4, salt: s4 } = await hashPassword('SuperPass123!');
       await expect(
         ctx.db
-          .prepare(`INSERT INTO users (id, username, password_hash, password_salt, role, status) VALUES (?, 'super_4', ?, ?, 'super_admin', 'active')`)
-          .bind(crypto.randomUUID(), h4, s4)
+          .prepare(`INSERT INTO users (id, username, password_hash, password_salt, role, status) VALUES (?, 'super_3', ?, ?, 'super_admin', 'active')`)
+          .bind(crypto.randomUUID(), h3, s3)
           .run()
       ).rejects.toThrow(/MAX_SUPER_ADMIN_EXCEEDED/);
     });
 
-    it('mencegah promosi user biasa menjadi Super Admin ke-4 (trg_limit_super_admin_update)', async () => {
-      // Buat 3 Super Admin
-      for (let i = 1; i <= 3; i++) {
+    it('mencegah promosi user biasa menjadi Super Admin ke-3 (trg_limit_super_admin_update)', async () => {
+      // Buat 2 Super Admin
+      for (let i = 1; i <= 2; i++) {
         const { hash, salt } = await hashPassword('SuperPass123!');
         await ctx.db
           .prepare(`INSERT INTO users (id, username, password_hash, password_salt, role, status) VALUES (?, ?, ?, ?, 'super_admin', 'active')`)
@@ -108,25 +102,43 @@ describe('Sistem Hak Akses Tiga Level: Super Admin, Admin, dan Member', () => {
       ).rejects.toThrow(/MAX_SUPER_ADMIN_EXCEEDED/);
     });
 
-    it('melindungi Super Admin dari penghapusan (trg_protect_super_admin_delete)', async () => {
-      const superAdmin = await seedTestSuperAdmin(ctx.db, 'super_undeletable');
+    it('melindungi akun Super Admin terakhir dari penghapusan (trg_protect_last_super_admin_delete)', async () => {
+      const superAdmin1 = await seedTestSuperAdmin(ctx.db, 'super_last_one');
+
+      // Saat hanya ada 1 Super Admin, penghapusan ditolak
       await expect(
-        ctx.db.prepare(`DELETE FROM users WHERE id = ?`).bind(superAdmin.id).run()
-      ).rejects.toThrow(/SUPER_ADMIN_CANNOT_BE_DELETED/);
+        ctx.db.prepare(`DELETE FROM users WHERE id = ?`).bind(superAdmin1.id).run()
+      ).rejects.toThrow(/CANNOT_DELETE_LAST_SUPER_ADMIN/);
+
+      // Tambahkan Super Admin ke-2
+      const { hash: h2, salt: s2 } = await hashPassword('SuperPass123!');
+      const superAdmin2Id = crypto.randomUUID();
+      await ctx.db
+        .prepare(`INSERT INTO users (id, username, password_hash, password_salt, role, status) VALUES (?, 'super_second', ?, ?, 'super_admin', 'active')`)
+        .bind(superAdmin2Id, h2, s2)
+        .run();
+
+      // Sekarang ada 2 Super Admin, penghapusan salah satu Super Admin diizinkan via database admin
+      await ctx.db.prepare(`DELETE FROM users WHERE id = ?`).bind(superAdmin2Id).run();
+
+      // Sekarang tinggal 1 Super Admin lagi, penghapusan superAdmin1 harus kembali ditolak
+      await expect(
+        ctx.db.prepare(`DELETE FROM users WHERE id = ?`).bind(superAdmin1.id).run()
+      ).rejects.toThrow(/CANNOT_DELETE_LAST_SUPER_ADMIN/);
     });
 
-    it('melindungi Super Admin dari penonaktifan atau penurunan role (trg_protect_super_admin_status)', async () => {
+    it('melindungi akun Super Admin aktif terakhir dari penonaktifan atau penurunan role (trg_protect_last_super_admin_status)', async () => {
       const superAdmin = await seedTestSuperAdmin(ctx.db, 'super_protected');
 
-      // Uji penonaktifan (status = 'suspended')
+      // Uji penonaktifan saat menjadi satu-satunya Super Admin aktif (status = 'suspended')
       await expect(
         ctx.db.prepare(`UPDATE users SET status = 'suspended' WHERE id = ?`).bind(superAdmin.id).run()
-      ).rejects.toThrow(/SUPER_ADMIN_CANNOT_BE_SUSPENDED_OR_DEMOTED/);
+      ).rejects.toThrow(/CANNOT_SUSPEND_OR_DEMOTE_LAST_SUPER_ADMIN/);
 
-      // Uji penurunan role (role = 'admin')
+      // Uji penurunan role saat menjadi satu-satunya Super Admin aktif (role = 'admin')
       await expect(
         ctx.db.prepare(`UPDATE users SET role = 'admin' WHERE id = ?`).bind(superAdmin.id).run()
-      ).rejects.toThrow(/SUPER_ADMIN_CANNOT_BE_SUSPENDED_OR_DEMOTED/);
+      ).rejects.toThrow(/CANNOT_SUSPEND_OR_DEMOTE_LAST_SUPER_ADMIN/);
     });
 
     it('penegakan satu perangkat aktif untuk Admin & Member, serta multi-perangkat untuk Super Admin', async () => {
