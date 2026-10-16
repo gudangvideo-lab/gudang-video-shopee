@@ -1311,19 +1311,16 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
         expect(originalUser?.username).toBe('admin_asli');
         expect(originalUser?.password_hash).toBe(first.hash);
 
-        // 3. Masukkan 2 super admin tambahan sehingga kuota tepat 3 terpenuhi
+        // 3. Masukkan 1 super admin tambahan sehingga kuota tepat 2 terpenuhi
         const b2 = await generateBootstrapAdminSql('admin_super_2', 'SuperPass2222!');
         for (const stmt of b2.sqlStatements) await cleanCtx.db.prepare(stmt).run();
-
-        const b3 = await generateBootstrapAdminSql('admin_super_3', 'SuperPass3333!');
-        for (const stmt of b3.sqlStatements) await cleanCtx.db.prepare(stmt).run();
 
         const countFull = await cleanCtx.db
           .prepare(`SELECT COUNT(*) as count FROM users WHERE role = 'super_admin'`)
           .first<{ count: number }>();
-        expect(countFull?.count).toBe(3);
+        expect(countFull?.count).toBe(2);
 
-        // 4. Percobaan bootstrap ke-4 oleh penyerang ditolak karena kuota 3 sudah penuh
+        // 4. Percobaan bootstrap ke-3 oleh penyerang ditolak karena kuota 2 sudah penuh
         const attacker = await generateBootstrapAdminSql('admin_pembajak', 'AttackerPass123!');
         for (const stmt of attacker.sqlStatements) {
           await cleanCtx.db.prepare(stmt).run();
@@ -1332,7 +1329,7 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
         const countAfterAttack = await cleanCtx.db
           .prepare(`SELECT COUNT(*) as count FROM users WHERE role = 'super_admin'`)
           .first<{ count: number }>();
-        expect(countAfterAttack?.count).toBe(3);
+        expect(countAfterAttack?.count).toBe(2);
 
         const attackerUser = await cleanCtx.db
           .prepare(`SELECT id FROM users WHERE username = 'admin_pembajak'`)
@@ -1346,29 +1343,48 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
     it('dua proses bootstrap simultan saat sisa kuota 1 hanya menghasilkan tepat 1 akun admin tambahan', async () => {
       const cleanCtx = await createIsolatedTestDb();
       try {
-        // Isi hingga tersisa 1 slot (2 super admin terisi)
+        // Isi hingga tersisa 1 slot (1 super admin terisi dari batas maksimal 2)
         const b1 = await generateBootstrapAdminSql('admin_slot_1', 'SlotPass111!');
         for (const s of b1.sqlStatements) await cleanCtx.db.prepare(s).run();
-        const b2 = await generateBootstrapAdminSql('admin_slot_2', 'SlotPass222!');
-        for (const s of b2.sqlStatements) await cleanCtx.db.prepare(s).run();
 
         const boot1 = await generateBootstrapAdminSql('admin_race_1', 'RacePassword123!');
         const boot2 = await generateBootstrapAdminSql('admin_race_2', 'RacePassword456!');
 
         // Eksekusi statement SQL secara bersamaan memperebutkan slot terakhir
-        await Promise.all([
+        const [results1, results2] = await Promise.all([
           (async () => {
-            for (const s of boot1.sqlStatements) await cleanCtx.db.prepare(s).run();
+            const res = [];
+            for (const s of boot1.sqlStatements) res.push(await cleanCtx.db.prepare(s).run());
+            return res;
           })(),
           (async () => {
-            for (const s of boot2.sqlStatements) await cleanCtx.db.prepare(s).run();
+            const res = [];
+            for (const s of boot2.sqlStatements) res.push(await cleanCtx.db.prepare(s).run());
+            return res;
           })()
         ]);
+
+        // Verifikasi hasil kembalian eksekusi: tepat 1 proses yang berhasil meng-insert baris user baru
+        const changes1 = (results1[0] as any)?.meta?.changes ?? 0;
+        const changes2 = (results2[0] as any)?.meta?.changes ?? 0;
+        expect(changes1 + changes2).toBe(1);
+
+        // Verifikasi record database: tepat 1 akun yang terbentuk antara admin_race_1 atau admin_race_2
+        const race1User = await cleanCtx.db
+          .prepare(`SELECT id, username FROM users WHERE username = 'admin_race_1'`)
+          .first<{ id: string; username: string }>();
+        const race2User = await cleanCtx.db
+          .prepare(`SELECT id, username FROM users WHERE username = 'admin_race_2'`)
+          .first<{ id: string; username: string }>();
+
+        const race1Created = race1User !== null;
+        const race2Created = race2User !== null;
+        expect(race1Created !== race2Created).toBe(true);
 
         const adminCount = await cleanCtx.db
           .prepare(`SELECT COUNT(*) as count FROM users WHERE role = 'super_admin'`)
           .first<{ count: number }>();
-        expect(adminCount?.count).toBe(3);
+        expect(adminCount?.count).toBe(2);
       } finally {
         await cleanCtx.cleanup();
       }
