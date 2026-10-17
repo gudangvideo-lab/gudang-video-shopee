@@ -485,4 +485,35 @@ describe('Frontend UI Components & Page Rendering', () => {
     expect(stateVideos).toEqual(['Video Berhasil']);
     expect(uiError).toBeNull();
   });
+
+  it('merender empty state katalog saat tidak ada video dan menyembunyikan kontrol paginasi', () => {
+    const authSpy = vi.spyOn(authContext, 'useAuth').mockReturnValue({
+      user: {
+        id: 'usr-member-1',
+        username: 'member_affiliate',
+        role: 'member',
+        status: 'active',
+        shopee_link: 'https://shopee.co.id/member_affiliate'
+      },
+      device: null,
+      loading: false,
+      error: null,
+      refreshUser: vi.fn(),
+      logout: vi.fn(),
+      setUserFromResponse: vi.fn()
+    });
+
+    try {
+      const html = renderToStaticMarkup(
+        <RouterProvider>
+          <UserDashboardPage />
+        </RouterProvider>
+      );
+      expect(html).toContain('Mengambil katalog video dari Cloudflare R2...');
+      expect(html).not.toContain('Halaman Berikutnya');
+      expect(html).not.toContain('Halaman Sebelumnya');
+    } finally {
+      authSpy.mockRestore();
+    }
+  });
 });
