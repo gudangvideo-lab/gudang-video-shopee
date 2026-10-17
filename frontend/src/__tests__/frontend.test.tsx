@@ -6,6 +6,7 @@
  * - Render komponen formulir autentikasi, telemetri dashboard, dan panel admin
  */
 
+import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { authApi, adminApi, ApiClientError } from '../api/client';
@@ -236,7 +237,106 @@ describe('Frontend UI Components & Page Rendering', () => {
     expect(html).toContain('Gunakan huruf dan angka');
   });
 
-  it('merender halaman LoginPage dengan form masuk dan tautan navigasi', () => {
+  it('merender komponen Input password dengan toggle visibility (mata) dan status awal tersembunyi (type="password")', () => {
+    const html = renderToStaticMarkup(
+      <Input
+        label="Kata Sandi"
+        id="login-password"
+        name="password"
+        type="password"
+        value="PasswordRahasia123!"
+        readOnly
+        required
+      />
+    );
+    expect(html).toContain('password-input-wrapper');
+    expect(html).toContain('type="password"');
+    expect(html).toContain('password-toggle-btn');
+    expect(html).toContain('aria-label="Tampilkan kata sandi"');
+    expect(html).toContain('title="Tampilkan kata sandi"');
+    expect(html).toContain('value="PasswordRahasia123!"');
+  });
+
+  it('memastikan komponen Input biasa (non-password) tidak merender tombol toggle password', () => {
+    const html = renderToStaticMarkup(
+      <Input
+        label="Email"
+        id="user-email"
+        name="email"
+        type="text"
+        value="user@example.com"
+        readOnly
+      />
+    );
+    expect(html).not.toContain('password-input-wrapper');
+    expect(html).not.toContain('password-toggle-btn');
+    expect(html).toContain('type="text"');
+    expect(html).toContain('value="user@example.com"');
+  });
+
+  it('memastikan toggle visibility mengubah type ke text saat aktif dan mempertahankan nilai password', () => {
+    // 1. Uji kondisi ketika state showPassword bernilai true
+    const spyTrue = vi.spyOn(React, 'useState').mockReturnValueOnce([true, vi.fn()]);
+    const elementVisible = Input({
+      label: 'Kata Sandi',
+      id: 'login-password',
+      name: 'password',
+      type: 'password',
+      value: 'PasswordRahasia123!',
+      readOnly: true
+    }) as React.ReactElement;
+
+    const wrapperVisible = elementVisible.props.children[1];
+    const inputVisible = wrapperVisible.props.children[0];
+    const buttonVisible = wrapperVisible.props.children[1];
+
+    expect(inputVisible.props.type).toBe('text');
+    expect(inputVisible.props.value).toBe('PasswordRahasia123!');
+    expect(buttonVisible.props['aria-label']).toBe('Sembunyikan kata sandi');
+    expect(buttonVisible.props.title).toBe('Sembunyikan kata sandi');
+    spyTrue.mockRestore();
+
+    // 2. Uji fungsi updater toggle via direct element invocation saat showPassword bernilai false
+    let updaterFn: ((prev: boolean) => boolean) | null = null;
+    const mockSetState = vi.fn((fnOrVal) => {
+      if (typeof fnOrVal === 'function') {
+        updaterFn = fnOrVal;
+      }
+    });
+
+    const spyFalse = vi.spyOn(React, 'useState').mockReturnValueOnce([false, mockSetState]);
+    const elementHidden = Input({
+      label: 'Kata Sandi',
+      id: 'login-password',
+      name: 'password',
+      type: 'password',
+      value: 'PasswordRahasia123!',
+      readOnly: true
+    }) as React.ReactElement;
+
+    const wrapperHidden = elementHidden.props.children[1];
+    const inputHidden = wrapperHidden.props.children[0];
+    const buttonHidden = wrapperHidden.props.children[1];
+
+    expect(inputHidden.props.type).toBe('password');
+    expect(inputHidden.props.value).toBe('PasswordRahasia123!');
+    expect(buttonHidden.props['aria-label']).toBe('Tampilkan kata sandi');
+    expect(buttonHidden.props.title).toBe('Tampilkan kata sandi');
+    expect(buttonHidden.props.type).toBe('button');
+
+    // Klik tombol toggle
+    buttonHidden.props.onClick();
+    expect(mockSetState).toHaveBeenCalledTimes(1);
+    expect(updaterFn).toBeDefined();
+    if (updaterFn) {
+      expect((updaterFn as (prev: boolean) => boolean)(false)).toBe(true);
+      expect((updaterFn as (prev: boolean) => boolean)(true)).toBe(false);
+    }
+
+    spyFalse.mockRestore();
+  });
+
+  it('merender halaman LoginPage dengan form masuk, tombol toggle password, dan tautan navigasi', () => {
     const html = renderToStaticMarkup(
       <AuthProvider>
         <RouterProvider>
@@ -247,6 +347,7 @@ describe('Frontend UI Components & Page Rendering', () => {
     expect(html).toContain('Masuk ke Gudang Video');
     expect(html).toContain('Nama Pengguna');
     expect(html).toContain('Kata Sandi');
+    expect(html).toContain('password-toggle-btn');
     expect(html).toContain('Aktivasi Akun');
     expect(html).toContain('Reset Ikatan Perangkat');
   });

@@ -277,6 +277,44 @@ body {
   cursor: not-allowed;
 }
 
+/* Password Toggle Input (Fitur 1) */
+.password-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.password-input-wrapper .password-input {
+  width: 100%;
+  padding-right: 2.75rem;
+}
+
+.password-toggle-btn {
+  position: absolute;
+  right: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  padding: 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted, #64748b);
+  cursor: pointer;
+  border-radius: var(--radius-sm, 4px);
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.password-toggle-btn:hover,
+.password-toggle-btn:focus-visible {
+  color: var(--text-primary, #0f172a);
+  background-color: rgba(0, 0, 0, 0.05);
+  outline: 2px solid var(--primary, #ee4d2d);
+  outline-offset: 1px;
+}
+
 .input-error {
   border-color: #dc2626;
 }
