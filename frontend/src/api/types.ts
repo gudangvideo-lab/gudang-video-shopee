@@ -11,6 +11,9 @@ export interface User {
   role: UserRole;
   status: 'active' | 'suspended';
   shopee_link?: string | null;
+  whatsapp?: string | null;
+  registration_path?: 'direct' | 'referral' | string | null;
+  inviter_name?: string | null;
 }
 
 export interface DeviceInfo {
@@ -36,6 +39,9 @@ export interface ActivatePayload {
   username: string;
   password: string;
   shopee_link: string;
+  whatsapp: string;
+  registration_path: 'direct' | 'referral';
+  inviter_name?: string | null;
   device_name?: string;
 }
 
@@ -94,6 +100,9 @@ export interface AdminUserItem {
   role: UserRole;
   status: 'active' | 'suspended';
   shopee_link?: string | null;
+  whatsapp?: string | null;
+  registration_path?: 'direct' | 'referral' | string | null;
+  inviter_name?: string | null;
   created_at: string;
   device_name: string | null;
   device_bound_at: string | null;

@@ -275,6 +275,10 @@ export async function handleListUsers(request: Request, db: D1Database): Promise
     role: string;
     status: string;
     created_at: string;
+    shopee_link: string | null;
+    whatsapp: string | null;
+    registration_path: string | null;
+    inviter_name: string | null;
     device_name: string | null;
     device_bound_at: string | null;
     device_last_seen_at: string | null;
@@ -284,6 +288,7 @@ export async function handleListUsers(request: Request, db: D1Database): Promise
     .prepare(`
       SELECT
         u.id, u.username, u.role, u.status, u.created_at, u.shopee_link,
+        u.whatsapp, u.registration_path, u.inviter_name,
         d.device_name, d.bound_at AS device_bound_at, d.last_seen_at AS device_last_seen_at
       FROM users u
       LEFT JOIN user_devices d ON u.id = d.user_id AND d.is_active = 1

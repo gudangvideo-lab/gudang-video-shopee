@@ -98,6 +98,8 @@ describe('Frontend API Client & Security Standards', () => {
       username: 'member_baru',
       password: 'Password123!',
       shopee_link: 'https://shope.ee/member_baru',
+      whatsapp: '6281234567890',
+      registration_path: 'direct',
       device_name: 'Laptop Kerja'
     });
 
@@ -108,6 +110,8 @@ describe('Frontend API Client & Security Standards', () => {
     expect(body.activation_code).toBe('GVS-TESTCODE1234567890ABCDEF');
     expect(body.username).toBe('member_baru');
     expect(body.shopee_link).toBe('https://shope.ee/member_baru');
+    expect(body.whatsapp).toBe('6281234567890');
+    expect(body.registration_path).toBe('direct');
     expect(body.device_name).toBe('Laptop Kerja');
   });
 

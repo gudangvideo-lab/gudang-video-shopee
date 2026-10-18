@@ -107,6 +107,8 @@ describe('End-to-End (E2E) Lifecycle Testing - Gudang Video Shopee Affiliate', (
           username: 'affiliate_top_creator',
           password: 'CreatorPassword123!',
           shopee_link: 'https://shope.ee/top_creator',
+          whatsapp: '081234567890',
+          registration_path: 'direct',
           device_name: 'Chrome Windows Workstation'
         })
       }),
@@ -153,7 +155,9 @@ describe('End-to-End (E2E) Lifecycle Testing - Gudang Video Shopee Affiliate', (
           activation_code: activationCode,
           username: 'impostor_creator',
           password: 'HackerPassword123!',
-          shopee_link: 'https://shope.ee/impostor'
+          shopee_link: 'https://shope.ee/impostor',
+          whatsapp: '081234567891',
+          registration_path: 'direct'
         })
       }),
       ctx.env

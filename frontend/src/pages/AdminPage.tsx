@@ -1443,6 +1443,8 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
                   <th>Nama Pengguna</th>
                   <th>Peran</th>
                   <th>Status Akun</th>
+                  <th>WhatsApp</th>
+                  <th>Jalur Pendaftaran</th>
                   <th>Perangkat Terikat</th>
                   <th>Aktivitas Terakhir</th>
                   <th>Tindakan</th>
@@ -1451,7 +1453,7 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
               <tbody>
                 {users.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="text-center text-muted p-6">
+                    <td colSpan={8} className="text-center text-muted p-6">
                       Tidak ada pengguna ditemukan.
                     </td>
                   </tr>
@@ -1480,6 +1482,29 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
                         <Badge variant={item.status === 'active' ? 'success' : 'danger'}>
                           {item.status === 'active' ? 'Aktif' : 'Dibekukan'}
                         </Badge>
+                      </td>
+                      <td>
+                        {item.whatsapp ? (
+                          <span className="font-mono text-xs">{item.whatsapp}</span>
+                        ) : (
+                          <span className="text-muted text-xs">-</span>
+                        )}
+                      </td>
+                      <td>
+                        {item.registration_path === 'referral' ? (
+                          <div className="text-xs">
+                            <span className="badge badge-warning text-xs">Undangan</span>
+                            {item.inviter_name && (
+                              <span className="text-muted ml-1" title={item.inviter_name}>
+                                ({item.inviter_name})
+                              </span>
+                            )}
+                          </div>
+                        ) : item.registration_path === 'direct' ? (
+                          <span className="badge badge-neutral text-xs">Daftar Sendiri</span>
+                        ) : (
+                          <span className="text-muted text-xs">-</span>
+                        )}
                       </td>
                       <td>
                         {item.device_name ? (

@@ -95,6 +95,8 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
           username: 'user_berhasil',
           password: 'PasswordValid123!',
           shopee_link: 'https://shope.ee/user_berhasil',
+          whatsapp: '081234567890',
+          registration_path: 'direct',
           device_name: 'Chrome Windows'
         })
       });
@@ -123,12 +125,15 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
       expect(codeRow?.used_count).toBe(1);
       expect(codeRow?.used_by_user_id).toBeTruthy();
 
-      // Verifikasi shopee_link tersimpan di database
+      // Verifikasi shopee_link, whatsapp, dan registration_path tersimpan di database
       const userDb = await ctx.db
-        .prepare(`SELECT shopee_link FROM users WHERE id = ?`)
+        .prepare(`SELECT shopee_link, whatsapp, registration_path, inviter_name FROM users WHERE id = ?`)
         .bind(codeRow?.used_by_user_id)
-        .first<{ shopee_link: string }>();
+        .first<{ shopee_link: string; whatsapp: string; registration_path: string; inviter_name: string | null }>();
       expect(userDb?.shopee_link).toBe('https://shope.ee/user_berhasil');
+      expect(userDb?.whatsapp).toBe('6281234567890');
+      expect(userDb?.registration_path).toBe('direct');
+      expect(userDb?.inviter_name).toBeNull();
 
       // Verifikasi 1 perangkat aktif terdaftar
       const deviceRow = await ctx.db
@@ -183,7 +188,9 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
           activation_code: 'GVS-INVALID-CODE-NOT-EXIST-1234',
           username: 'user_gagal',
           password: 'PasswordValid123!',
-          shopee_link: 'https://shope.ee/user_gagal'
+          shopee_link: 'https://shope.ee/user_gagal',
+          whatsapp: '081234567890',
+          registration_path: 'direct'
         })
       });
 
@@ -210,7 +217,9 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
           activation_code: code,
           username: 'user_expired',
           password: 'PasswordValid123!',
-          shopee_link: 'https://shope.ee/user_expired'
+          shopee_link: 'https://shope.ee/user_expired',
+          whatsapp: '081234567890',
+          registration_path: 'direct'
         })
       });
 
@@ -236,7 +245,9 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
           activation_code: code,
           username: 'user_pertama',
           password: 'PasswordValid123!',
-          shopee_link: 'https://shope.ee/user_pertama'
+          shopee_link: 'https://shope.ee/user_pertama',
+          whatsapp: '081234567890',
+          registration_path: 'direct'
         })
       });
       const res1 = await worker.fetch(req1, ctx.env);
@@ -250,7 +261,9 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
           activation_code: code,
           username: 'user_kedua',
           password: 'PasswordValid123!',
-          shopee_link: 'https://shope.ee/user_kedua'
+          shopee_link: 'https://shope.ee/user_kedua',
+          whatsapp: '081234567890',
+          registration_path: 'direct'
         })
       });
       const res2 = await worker.fetch(req2, ctx.env);
@@ -274,7 +287,9 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
             activation_code: code,
             username,
             password: 'PasswordValid123!',
-            shopee_link: `https://shope.ee/${username}`
+            shopee_link: `https://shope.ee/${username}`,
+            whatsapp: '081234567890',
+            registration_path: 'direct'
           })
         });
 
@@ -306,7 +321,9 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
           activation_code: code1,
           username: 'duplicate_user_test',
           password: 'PasswordValid123!',
-          shopee_link: 'https://shope.ee/dup1'
+          shopee_link: 'https://shope.ee/dup1',
+          whatsapp: '081234567890',
+          registration_path: 'direct'
         })
       });
       const res1 = await worker.fetch(req1, ctx.env);
@@ -321,7 +338,9 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
           activation_code: code2,
           username: 'duplicate_user_test', // Duplikat!
           password: 'PasswordOther456!',
-          shopee_link: 'https://shope.ee/dup2'
+          shopee_link: 'https://shope.ee/dup2',
+          whatsapp: '081234567890',
+          registration_path: 'direct'
         })
       });
       const res2 = await worker.fetch(req2, ctx.env);
@@ -383,6 +402,8 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
           username: 'target_login_user',
           password,
           shopee_link: 'https://shope.ee/target_login_user',
+          whatsapp: '081234567890',
+          registration_path: 'direct',
           device_name: 'Test Device 1'
         })
       });
@@ -732,6 +753,8 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
           username: 'regular_check_user',
           password,
           shopee_link: 'https://shope.ee/regular_check',
+          whatsapp: '081234567890',
+          registration_path: 'direct',
           device_name: 'Regular Device'
         })
       });
@@ -781,6 +804,8 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
           username: 'reset_target_user',
           password,
           shopee_link: 'https://shope.ee/reset_target',
+          whatsapp: '081234567890',
+          registration_path: 'direct',
           device_name: 'Perangkat Lama'
         })
       });
@@ -992,7 +1017,9 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
           activation_code: code,
           username: 'session_test_user',
           password: 'PasswordSession123!',
-          shopee_link: 'https://shope.ee/session_user'
+          shopee_link: 'https://shope.ee/session_user',
+          whatsapp: '081234567890',
+          registration_path: 'direct'
         })
       });
       const res = await worker.fetch(req, ctx.env);
@@ -1070,7 +1097,9 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
           activation_code: code,
           username: 'regular_user',
           password: 'PasswordValid123!',
-          shopee_link: 'https://shope.ee/regular_user'
+          shopee_link: 'https://shope.ee/regular_user',
+          whatsapp: '081234567890',
+          registration_path: 'direct'
         })
       });
       const res = await worker.fetch(req, ctx.env);
@@ -1481,7 +1510,9 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
           activation_code: code,
           username: 'referer_success_user',
           password: 'PasswordValid123!',
-          shopee_link: 'https://shope.ee/referer_success'
+          shopee_link: 'https://shope.ee/referer_success',
+          whatsapp: '081234567890',
+          registration_path: 'direct'
         })
       });
 
@@ -1813,7 +1844,9 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
               activation_code: code,
               username: 'new_member_candidate',
               password: 'MemberPass123!',
-              shopee_link: 'https://shopee.co.id/member_shop'
+              shopee_link: 'https://shopee.co.id/member_shop',
+              whatsapp: '081234567890',
+              registration_path: 'direct'
             })
           }),
           ctx.env
@@ -2001,7 +2034,9 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
             activation_code: sensitiveActCode,
             username: sensitiveUser,
             password: sensitivePass,
-            shopee_link: 'https://shopee.co.id/test_shop'
+            shopee_link: 'https://shopee.co.id/test_shop',
+            whatsapp: '081234567890',
+            registration_path: 'direct'
           })
         }),
         ctx.env
@@ -2166,7 +2201,9 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
             activation_code: actCode,
             username: 'clean_reset_user',
             password: memberPass,
-            shopee_link: 'https://shopee.co.id/clean_reset_shop'
+            shopee_link: 'https://shopee.co.id/clean_reset_shop',
+            whatsapp: '081234567890',
+            registration_path: 'direct'
           })
         }),
         ctx.env
@@ -2247,6 +2284,435 @@ describe('Modul Autentikasi dan Keamanan Cloudflare Worker', () => {
 
       setMaxRateLimitEntries(null);
       expect(getMaxRateLimitEntries()).toBe(5000);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 10. FITUR 2: DATA PENDAFTARAN ANGGOTA (WHATSAPP, JALUR, PENGUNDANG)
+  // ---------------------------------------------------------------------------
+  describe('Fitur 2: Data Pendaftaran Anggota (WhatsApp, Jalur Pendaftaran, Nama Pengundang)', () => {
+    it('aktivasi dengan direct menyimpan WhatsApp ternormalisasi dan inviter_name = null', async () => {
+      const { code } = await seedTestActivationCode(ctx.db, adminId);
+      const res = await worker.fetch(
+        new Request('http://localhost:8787/api/auth/activate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activation_code: code,
+            username: 'member_direct',
+            password: 'Password123!',
+            shopee_link: 'https://shopee.co.id/member_direct',
+            whatsapp: '0812-3456-7890',
+            registration_path: 'direct'
+          })
+        }),
+        ctx.env
+      );
+
+      expect(res.status).toBe(200);
+      const data = await getJson(res);
+      expect(data.status).toBe('ok');
+      expect(data.user.whatsapp).toBe('6281234567890');
+      expect(data.user.registration_path).toBe('direct');
+      expect(data.user.inviter_name).toBeNull();
+
+      const dbUser = await ctx.db
+        .prepare(`SELECT whatsapp, registration_path, inviter_name FROM users WHERE username = 'member_direct'`)
+        .first<{ whatsapp: string; registration_path: string; inviter_name: string | null }>();
+      expect(dbUser?.whatsapp).toBe('6281234567890');
+      expect(dbUser?.registration_path).toBe('direct');
+      expect(dbUser?.inviter_name).toBeNull();
+    });
+
+    it('aktivasi dengan referral menyimpan WhatsApp ternormalisasi dan inviter_name', async () => {
+      const { code } = await seedTestActivationCode(ctx.db, adminId);
+      const res = await worker.fetch(
+        new Request('http://localhost:8787/api/auth/activate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activation_code: code,
+            username: 'member_referral',
+            password: 'Password123!',
+            shopee_link: 'https://shope.ee/member_referral',
+            whatsapp: '+62 821 9876 5432',
+            registration_path: 'referral',
+            inviter_name: 'Budi Santoso'
+          })
+        }),
+        ctx.env
+      );
+
+      expect(res.status).toBe(200);
+      const data = await getJson(res);
+      expect(data.status).toBe('ok');
+      expect(data.user.whatsapp).toBe('6282198765432');
+      expect(data.user.registration_path).toBe('referral');
+      expect(data.user.inviter_name).toBe('Budi Santoso');
+
+      const dbUser = await ctx.db
+        .prepare(`SELECT whatsapp, registration_path, inviter_name FROM users WHERE username = 'member_referral'`)
+        .first<{ whatsapp: string; registration_path: string; inviter_name: string }>();
+      expect(dbUser?.whatsapp).toBe('6282198765432');
+      expect(dbUser?.registration_path).toBe('referral');
+      expect(dbUser?.inviter_name).toBe('Budi Santoso');
+    });
+
+    it('normalisasi berbagai variasi format nomor WhatsApp Indonesia (08..., 628..., +628...)', async () => {
+      const testCases = [
+        { input: '081234567890', expected: '6281234567890' },
+        { input: '6281234567891', expected: '6281234567891' },
+        { input: '+6281234567892', expected: '6281234567892' },
+        { input: '0812-3456-7893', expected: '6281234567893' },
+        { input: '+62 812 3456 7894', expected: '6281234567894' }
+      ];
+
+      for (let i = 0; i < testCases.length; i++) {
+        const { code } = await seedTestActivationCode(ctx.db, adminId);
+        const res = await worker.fetch(
+          new Request('http://localhost:8787/api/auth/activate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              activation_code: code,
+              username: `norm_user_${i}`,
+              password: 'Password123!',
+              shopee_link: `https://shopee.co.id/norm_${i}`,
+              whatsapp: testCases[i].input,
+              registration_path: 'direct'
+            })
+          }),
+          ctx.env
+        );
+        expect(res.status).toBe(200);
+        const data = await getJson(res);
+        expect(data.user.whatsapp).toBe(testCases[i].expected);
+      }
+    });
+
+    it('menolak aktivasi jika WhatsApp tidak diisi (400 MISSING_WHATSAPP)', async () => {
+      const { code } = await seedTestActivationCode(ctx.db, adminId);
+      const res = await worker.fetch(
+        new Request('http://localhost:8787/api/auth/activate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activation_code: code,
+            username: 'user_no_wa',
+            password: 'Password123!',
+            shopee_link: 'https://shopee.co.id/user_no_wa',
+            registration_path: 'direct'
+          })
+        }),
+        ctx.env
+      );
+      expect(res.status).toBe(400);
+      const data = await getJson(res);
+      expect(data.error).toBe('MISSING_WHATSAPP');
+    });
+
+    it('menolak aktivasi jika nomor WhatsApp tidak valid (huruf, terlalu pendek, terlalu panjang, bukan nomor Indonesia)', async () => {
+      const invalidNumbers = [
+        '08123abc456', // mengandung huruf
+        '0812345',     // terlalu pendek (< 11 digit canonical)
+        '08123456789012345', // terlalu panjang (> 15 digit)
+        '+12025550123', // nomor US
+        '0217654321',  // telepon rumah, bukan HP 08...
+        '627123456789'  // bukan 628...
+      ];
+
+      for (let i = 0; i < invalidNumbers.length; i++) {
+        const { code } = await seedTestActivationCode(ctx.db, adminId);
+        const res = await worker.fetch(
+          new Request('http://localhost:8787/api/auth/activate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              activation_code: code,
+              username: `bad_wa_${i}`,
+              password: 'Password123!',
+              shopee_link: 'https://shopee.co.id/bad_wa',
+              whatsapp: invalidNumbers[i],
+              registration_path: 'direct'
+            })
+          }),
+          ctx.env
+        );
+        expect(res.status).toBe(400);
+        const data = await getJson(res);
+        expect(data.error).toBe('INVALID_WHATSAPP');
+      }
+    });
+
+    it('menolak aktivasi jika jalur pendaftaran tidak valid (400 INVALID_REGISTRATION_PATH)', async () => {
+      const { code } = await seedTestActivationCode(ctx.db, adminId);
+      const res = await worker.fetch(
+        new Request('http://localhost:8787/api/auth/activate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activation_code: code,
+            username: 'bad_path_user',
+            password: 'Password123!',
+            shopee_link: 'https://shopee.co.id/bad_path',
+            whatsapp: '081234567890',
+            registration_path: 'affiliate_partner'
+          })
+        }),
+        ctx.env
+      );
+      expect(res.status).toBe(400);
+      const data = await getJson(res);
+      expect(data.error).toBe('INVALID_REGISTRATION_PATH');
+    });
+
+    it('menolak aktivasi referral jika inviter_name kosong (400 MISSING_INVITER_NAME)', async () => {
+      const { code } = await seedTestActivationCode(ctx.db, adminId);
+      const res = await worker.fetch(
+        new Request('http://localhost:8787/api/auth/activate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activation_code: code,
+            username: 'ref_no_inviter',
+            password: 'Password123!',
+            shopee_link: 'https://shopee.co.id/ref_no_inviter',
+            whatsapp: '081234567890',
+            registration_path: 'referral',
+            inviter_name: '   '
+          })
+        }),
+        ctx.env
+      );
+      expect(res.status).toBe(400);
+      const data = await getJson(res);
+      expect(data.error).toBe('MISSING_INVITER_NAME');
+    });
+
+    it('menolak aktivasi referral jika inviter_name kurang dari 2 atau lebih dari 100 karakter (400 INVALID_INVITER_NAME)', async () => {
+      // Terlalu pendek (< 2 karakter)
+      const { code: code1 } = await seedTestActivationCode(ctx.db, adminId);
+      const res1 = await worker.fetch(
+        new Request('http://localhost:8787/api/auth/activate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activation_code: code1,
+            username: 'ref_short_inviter',
+            password: 'Password123!',
+            shopee_link: 'https://shopee.co.id/ref_short_inviter',
+            whatsapp: '081234567890',
+            registration_path: 'referral',
+            inviter_name: 'A'
+          })
+        }),
+        ctx.env
+      );
+      expect(res1.status).toBe(400);
+      const data1 = await getJson(res1);
+      expect(data1.error).toBe('INVALID_INVITER_NAME');
+
+      // Terlalu panjang (> 100 karakter)
+      const { code: code2 } = await seedTestActivationCode(ctx.db, adminId);
+      const res2 = await worker.fetch(
+        new Request('http://localhost:8787/api/auth/activate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activation_code: code2,
+            username: 'ref_long_inviter',
+            password: 'Password123!',
+            shopee_link: 'https://shopee.co.id/ref_long_inviter',
+            whatsapp: '081234567890',
+            registration_path: 'referral',
+            inviter_name: 'Z'.repeat(101)
+          })
+        }),
+        ctx.env
+      );
+      expect(res2.status).toBe(400);
+      const data2 = await getJson(res2);
+      expect(data2.error).toBe('INVALID_INVITER_NAME');
+    });
+
+    it('jalur direct mengosongkan/mengabaikan inviter_name meski klien mengirimkan string nama pengundang', async () => {
+      const { code } = await seedTestActivationCode(ctx.db, adminId);
+      const res = await worker.fetch(
+        new Request('http://localhost:8787/api/auth/activate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activation_code: code,
+            username: 'direct_with_inviter',
+            password: 'Password123!',
+            shopee_link: 'https://shopee.co.id/direct_with_inviter',
+            whatsapp: '081234567890',
+            registration_path: 'direct',
+            inviter_name: 'Harusnya Diabaikan'
+          })
+        }),
+        ctx.env
+      );
+      expect(res.status).toBe(200);
+      const data = await getJson(res);
+      expect(data.user.inviter_name).toBeNull();
+
+      const dbUser = await ctx.db
+        .prepare(`SELECT inviter_name FROM users WHERE username = 'direct_with_inviter'`)
+        .first<{ inviter_name: string | null }>();
+      expect(dbUser?.inviter_name).toBeNull();
+    });
+
+    it('kode aktivasi tidak hangus jika validasi data pendaftaran baru gagal (atomisitas)', async () => {
+      const { code } = await seedTestActivationCode(ctx.db, adminId);
+      const res = await worker.fetch(
+        new Request('http://localhost:8787/api/auth/activate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activation_code: code,
+            username: 'fail_wa_user',
+            password: 'Password123!',
+            shopee_link: 'https://shopee.co.id/fail_wa',
+            whatsapp: 'bukan_nomor',
+            registration_path: 'direct'
+          })
+        }),
+        ctx.env
+      );
+      expect(res.status).toBe(400);
+
+      // Pastikan status kode aktivasi masih 'active' dan used_count = 0
+      const codeRow = await ctx.db
+        .prepare(`SELECT status, used_count FROM activation_codes WHERE code_hash = ?`)
+        .bind(await sha256(normalizeCode(code)))
+        .first<{ status: string; used_count: number }>();
+      expect(codeRow?.status).toBe('active');
+      expect(codeRow?.used_count).toBe(0);
+
+      // Kode masih dapat dipakai oleh aktivasi yang valid berikutnya
+      const retryRes = await worker.fetch(
+        new Request('http://localhost:8787/api/auth/activate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activation_code: code,
+            username: 'success_retry_user',
+            password: 'Password123!',
+            shopee_link: 'https://shopee.co.id/success_retry',
+            whatsapp: '081234567890',
+            registration_path: 'direct'
+          })
+        }),
+        ctx.env
+      );
+      expect(retryRes.status).toBe(200);
+    });
+
+    it('kompatibilitas mundur: akun lama dengan whatsapp = null tetap dapat login dan lolos auth tanpa error', async () => {
+      const oldUserId = crypto.randomUUID();
+      const oldDeviceId = crypto.randomUUID();
+      const oldRawToken = 'old_device_token_raw_32bytes_sample';
+      const oldTokenHash = await sha256(oldRawToken);
+      const { hash: oldPassHash, salt: oldPassSalt } = await hashPassword('OldUserPassword123!');
+
+      // Sisipkan akun lama tanpa whatsapp (whatsapp = null, registration_path = 'direct', inviter_name = null)
+      await ctx.db.prepare(`
+        INSERT INTO users (id, username, password_hash, password_salt, role, status, whatsapp, registration_path, inviter_name)
+        VALUES (?, 'legacy_user', ?, ?, 'member', 'active', NULL, 'direct', NULL)
+      `).bind(oldUserId, oldPassHash, oldPassSalt).run();
+
+      await ctx.db.prepare(`
+        INSERT INTO user_devices (id, user_id, device_token_hash, device_name, is_active)
+        VALUES (?, ?, ?, 'Legacy Device', 1)
+      `).bind(oldDeviceId, oldUserId, oldTokenHash).run();
+
+      // Login dengan cookie perangkat lama
+      const loginRes = await worker.fetch(
+        new Request('http://localhost:8787/api/auth/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Cookie: `${DEVICE_COOKIE_NAME}=${oldRawToken}`
+          },
+          body: JSON.stringify({
+            username: 'legacy_user',
+            password: 'OldUserPassword123!'
+          })
+        }),
+        ctx.env
+      );
+      expect(loginRes.status).toBe(200);
+      const loginData = await getJson(loginRes);
+      expect(loginData.status).toBe('ok');
+      expect(loginData.user.username).toBe('legacy_user');
+      expect(loginData.user.role).toBe('member');
+
+      // Verifikasi di DB bahwa whatsapp adalah null
+      const legacyDb = await ctx.db
+        .prepare(`SELECT whatsapp, registration_path, inviter_name FROM users WHERE id = ?`)
+        .bind(oldUserId)
+        .first<{ whatsapp: string | null; registration_path: string; inviter_name: string | null }>();
+      expect(legacyDb?.whatsapp).toBeNull();
+      expect(legacyDb?.registration_path).toBe('direct');
+      expect(legacyDb?.inviter_name).toBeNull();
+
+      // Verifikasi sesi melalui /api/auth/me
+      const cookies = extractResponseCookies(loginRes);
+      const meRes = await worker.fetch(
+        new Request('http://localhost:8787/api/auth/me', {
+          method: 'GET',
+          headers: {
+            Cookie: `${SESSION_COOKIE_NAME}=${cookies[SESSION_COOKIE_NAME]}`
+          }
+        }),
+        ctx.env
+      );
+      expect(meRes.status).toBe(200);
+      const meData = await getJson(meRes);
+      expect(meData.user.username).toBe('legacy_user');
+    });
+
+    it('endpoint GET /api/admin/users mengembalikan whatsapp, registration_path, dan inviter_name', async () => {
+      // Daftarkan member dengan referral
+      const { code } = await seedTestActivationCode(ctx.db, adminId);
+      await worker.fetch(
+        new Request('http://localhost:8787/api/auth/activate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            activation_code: code,
+            username: 'admin_audit_user',
+            password: 'Password123!',
+            shopee_link: 'https://shopee.co.id/audit_user',
+            whatsapp: '081233445566',
+            registration_path: 'referral',
+            inviter_name: 'Kakak Pembimbing'
+          })
+        }),
+        ctx.env
+      );
+
+      // Panggil GET /api/admin/users dengan admin session
+      const usersRes = await worker.fetch(
+        new Request('http://localhost:8787/api/admin/users', {
+          method: 'GET',
+          headers: {
+            Cookie: adminSessionCookie
+          }
+        }),
+        ctx.env
+      );
+      expect(usersRes.status).toBe(200);
+      const usersData = await getJson(usersRes);
+      expect(usersData.status).toBe('ok');
+      expect(Array.isArray(usersData.users)).toBe(true);
+
+      const target = usersData.users.find((u: any) => u.username === 'admin_audit_user');
+      expect(target).toBeDefined();
+      expect(target.whatsapp).toBe('6281233445566');
+      expect(target.registration_path).toBe('referral');
+      expect(target.inviter_name).toBe('Kakak Pembimbing');
     });
   });
 });

@@ -66,7 +66,9 @@ describe('Fitur Wajib Registrasi Akun Shopee Affiliate & Persetujuan Perubahan A
           activation_code: code,
           username: 'shopee_user_1',
           password: 'PasswordValid123!',
-          shopee_link: 'https://shopee.co.id/official_store_id'
+          shopee_link: 'https://shopee.co.id/official_store_id',
+          whatsapp: '081234567890',
+          registration_path: 'direct'
         })
       });
 
@@ -164,7 +166,9 @@ describe('Fitur Wajib Registrasi Akun Shopee Affiliate & Persetujuan Perubahan A
             activation_code: code,
             username: uname,
             password: 'PasswordValid123!',
-            shopee_link: validUrls[i]
+            shopee_link: validUrls[i],
+            whatsapp: '081234567890',
+            registration_path: 'direct'
           })
         });
 

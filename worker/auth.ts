@@ -44,6 +44,32 @@ import {
 import { validateSession, parseSqliteDate, UserRole } from './session';
 
 /**
+ * Memvalidasi dan menormalisasi nomor WhatsApp Indonesia ke format kanonis: 628...
+ * Menerima format: 08..., 628..., +628... dengan spasi atau tanda hubung opsional.
+ * Menolak huruf, format luar negeri, nomor terlalu pendek (< 10 digit lokal / 11 digit kanonis),
+ * atau nomor terlalu panjang (> 15 digit total sesuai E.164).
+ */
+export function normalizeWhatsapp(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const cleaned = raw.trim().replace(/[\s-]/g, '');
+  if (!cleaned) return null;
+
+  let normalized = cleaned;
+  if (normalized.startsWith('+62')) {
+    normalized = '62' + normalized.slice(3);
+  } else if (normalized.startsWith('08')) {
+    normalized = '628' + normalized.slice(2);
+  }
+
+  // Format kanonis: harus diawali 628 diikuti 8 sampai 12 digit numerik (total panjang 11-15 digit)
+  if (!/^628[1-9][0-9]{7,11}$/.test(normalized)) {
+    return null;
+  }
+
+  return normalized;
+}
+
+/**
  * Endpoint: POST /api/auth/activate
  */
 export async function handleActivate(request: Request, db: D1Database): Promise<Response> {
@@ -77,7 +103,7 @@ export async function handleActivate(request: Request, db: D1Database): Promise<
     return jsonResponse({ error: 'INVALID_JSON', message: 'Payload JSON tidak valid atau melebihi batas ukuran.' }, 400);
   }
 
-  const { activation_code, username, password, shopee_link, device_name } = body;
+  const { activation_code, username, password, shopee_link, device_name, whatsapp, registration_path, inviter_name } = body;
 
   if (typeof activation_code !== 'string' || !activation_code.trim()) {
     return jsonResponse({ error: 'MISSING_CODE', message: 'Kode aktivasi wajib diisi.' }, 400);
@@ -92,6 +118,45 @@ export async function handleActivate(request: Request, db: D1Database): Promise<
       error: 'INVALID_SHOPEE_LINK',
       message: 'Tautan Shopee tidak valid. Harap gunakan tautan resmi Shopee (contoh: https://shopee.co.id/... atau https://shope.ee/...).'
     }, 400);
+  }
+
+  if (typeof whatsapp !== 'string' || !whatsapp.trim()) {
+    return jsonResponse({ error: 'MISSING_WHATSAPP', message: 'Nomor WhatsApp wajib diisi.' }, 400);
+  }
+
+  const cleanWhatsapp = normalizeWhatsapp(whatsapp);
+  if (!cleanWhatsapp) {
+    return jsonResponse({
+      error: 'INVALID_WHATSAPP',
+      message: 'Nomor WhatsApp tidak valid. Gunakan format nomor Indonesia (contoh: 08123456789 atau 628123456789).'
+    }, 400);
+  }
+
+  if (registration_path !== 'direct' && registration_path !== 'referral') {
+    return jsonResponse({
+      error: 'INVALID_REGISTRATION_PATH',
+      message: 'Jalur pendaftaran tidak valid. Pilih "direct" (daftar sendiri) atau "referral" (melalui undangan).'
+    }, 400);
+  }
+
+  let cleanInviterName: string | null = null;
+  if (registration_path === 'referral') {
+    if (typeof inviter_name !== 'string' || !inviter_name.trim()) {
+      return jsonResponse({
+        error: 'MISSING_INVITER_NAME',
+        message: 'Nama pengundang wajib diisi untuk jalur pendaftaran melalui undangan.'
+      }, 400);
+    }
+    const trimmedInviter = inviter_name.trim();
+    if (trimmedInviter.length < 2 || trimmedInviter.length > 100) {
+      return jsonResponse({
+        error: 'INVALID_INVITER_NAME',
+        message: 'Nama pengundang harus berupa 2-100 karakter.'
+      }, 400);
+    }
+    cleanInviterName = trimmedInviter;
+  } else {
+    cleanInviterName = null;
   }
 
   if (!isValidUsername(username)) {
@@ -164,12 +229,12 @@ export async function handleActivate(request: Request, db: D1Database): Promise<
     // Stmt 2: UPDATE activation_codes memicu trg_prevent_activation_code_reuse
     // Stmt 3: INSERT INTO user_devices (terikat aktif 1)
     // Stmt 4: INSERT INTO user_sessions (maksimal 30 hari)
-    // Stmt 5: INSERT INTO audit_logs (mencatat aktivasi member beserta tautan Shopee)
+    // Stmt 5: INSERT INTO audit_logs (mencatat aktivasi member beserta tautan Shopee, WA, dan jalur)
     const batchResults = await db.batch([
       db.prepare(`
-        INSERT INTO users (id, username, password_hash, password_salt, role, status, activation_code_id, shopee_link)
-        VALUES (?, ?, ?, ?, 'member', 'active', ?, ?)
-      `).bind(userId, username.trim(), passwordHash, passwordSalt, codeRow.id, cleanShopeeLink),
+        INSERT INTO users (id, username, password_hash, password_salt, role, status, activation_code_id, shopee_link, whatsapp, registration_path, inviter_name)
+        VALUES (?, ?, ?, ?, 'member', 'active', ?, ?, ?, ?, ?)
+      `).bind(userId, username.trim(), passwordHash, passwordSalt, codeRow.id, cleanShopeeLink, cleanWhatsapp, registration_path, cleanInviterName),
 
       db.prepare(`
         UPDATE activation_codes
@@ -193,7 +258,14 @@ export async function handleActivate(request: Request, db: D1Database): Promise<
       db.prepare(`
         INSERT INTO audit_logs (id, admin_id, action, target_user_id, details, ip_address, user_agent)
         VALUES (?, ?, 'ACTIVATE_USER', ?, ?, ?, ?)
-      `).bind(auditId, userId, userId, `Aktivasi akun member dengan tautan Shopee: ${cleanShopeeLink}`, ipAddress, userAgent)
+      `).bind(
+        auditId,
+        userId,
+        userId,
+        `Aktivasi akun member dengan tautan Shopee: ${cleanShopeeLink}, WA: ${cleanWhatsapp}, Jalur: ${registration_path}${cleanInviterName ? ` (Pengundang: ${cleanInviterName})` : ''}`,
+        ipAddress,
+        userAgent
+      )
     ]);
 
     if (!batchResults[1].meta.changes || batchResults[1].meta.changes < 1) {
@@ -223,7 +295,10 @@ export async function handleActivate(request: Request, db: D1Database): Promise<
     user: {
       username: username.trim(),
       role: 'member',
-      shopee_link: cleanShopeeLink
+      shopee_link: cleanShopeeLink,
+      whatsapp: cleanWhatsapp,
+      registration_path,
+      inviter_name: cleanInviterName
     }
   }, 200);
 

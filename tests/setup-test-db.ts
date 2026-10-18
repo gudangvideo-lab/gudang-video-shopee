@@ -128,6 +128,7 @@ export async function createIsolatedTestDb(): Promise<TestContext> {
   const m5Path = path.join(rootDir, 'migrations', '0005_shopee_account_approval.sql');
   const m6Path = path.join(rootDir, 'migrations', '0006_racks_and_account_management.sql');
   const m7Path = path.join(rootDir, 'migrations', '0007_max_two_super_admins.sql');
+  const m8Path = path.join(rootDir, 'migrations', '0008_member_registration_metadata.sql');
 
   const m1Sql = fs.readFileSync(m1Path, 'utf-8');
   const m2Sql = fs.readFileSync(m2Path, 'utf-8');
@@ -136,6 +137,7 @@ export async function createIsolatedTestDb(): Promise<TestContext> {
   const m5Sql = fs.readFileSync(m5Path, 'utf-8');
   const m6Sql = fs.readFileSync(m6Path, 'utf-8');
   const m7Sql = fs.readFileSync(m7Path, 'utf-8');
+  const m8Sql = fs.readFileSync(m8Path, 'utf-8');
 
   const statements = [
     ...splitSqlStatements(m1Sql),
@@ -144,7 +146,8 @@ export async function createIsolatedTestDb(): Promise<TestContext> {
     ...splitSqlStatements(m4Sql),
     ...splitSqlStatements(m5Sql),
     ...splitSqlStatements(m6Sql),
-    ...splitSqlStatements(m7Sql)
+    ...splitSqlStatements(m7Sql),
+    ...splitSqlStatements(m8Sql)
   ];
 
   for (const stmt of statements) {

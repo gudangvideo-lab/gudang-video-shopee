@@ -21,6 +21,9 @@ export const ActivatePage: React.FC = () => {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [shopeeLink, setShopeeLink] = useState('');
+  const [whatsapp, setWhatsapp] = useState('');
+  const [registrationPath, setRegistrationPath] = useState<'direct' | 'referral'>('direct');
+  const [inviterName, setInviterName] = useState('');
   const [deviceName, setDeviceName] = useState('');
 
   const [loading, setLoading] = useState(false);
@@ -35,6 +38,7 @@ export const ActivatePage: React.FC = () => {
     const cleanCode = code.trim().toUpperCase();
     const cleanUsername = username.trim();
     const cleanShopeeLink = shopeeLink.trim();
+    const cleanWhatsapp = whatsapp.trim().replace(/[\s-]/g, '');
 
     if (!cleanCode) {
       setErrorMsg('Kode aktivasi wajib diisi.');
@@ -44,6 +48,35 @@ export const ActivatePage: React.FC = () => {
     if (!cleanShopeeLink) {
       setErrorMsg('Tautan akun/profil Shopee Affiliate wajib diisi.');
       return;
+    }
+
+    if (!cleanWhatsapp) {
+      setErrorMsg('Nomor WhatsApp wajib diisi.');
+      return;
+    }
+
+    let normalizedWa = cleanWhatsapp;
+    if (normalizedWa.startsWith('+62')) {
+      normalizedWa = '62' + normalizedWa.slice(3);
+    } else if (normalizedWa.startsWith('08')) {
+      normalizedWa = '628' + normalizedWa.slice(2);
+    }
+
+    if (!/^628[1-9][0-9]{7,11}$/.test(normalizedWa)) {
+      setErrorMsg('Nomor WhatsApp tidak valid. Gunakan format nomor Indonesia (contoh: 08123456789 atau 628123456789).');
+      return;
+    }
+
+    if (registrationPath === 'referral') {
+      const cleanInviter = inviterName.trim();
+      if (!cleanInviter) {
+        setErrorMsg('Nama pengundang wajib diisi jika mendaftar melalui undangan.');
+        return;
+      }
+      if (cleanInviter.length < 2 || cleanInviter.length > 100) {
+        setErrorMsg('Nama pengundang harus berupa 2-100 karakter.');
+        return;
+      }
     }
 
     if (!cleanUsername) {
@@ -73,6 +106,9 @@ export const ActivatePage: React.FC = () => {
         username: cleanUsername,
         password,
         shopee_link: cleanShopeeLink,
+        whatsapp: normalizedWa,
+        registration_path: registrationPath,
+        inviter_name: registrationPath === 'referral' ? inviterName.trim() : null,
         device_name: deviceName.trim() || undefined
       });
 
@@ -190,6 +226,70 @@ export const ActivatePage: React.FC = () => {
             helperText="Wajib: Tautan profil atau affiliate Shopee Anda. Akun Anda akan terikat pada profil ini."
             disabled={loading || !!successMsg}
           />
+
+          <Input
+            label="Nomor WhatsApp"
+            id="activate-whatsapp"
+            name="whatsapp"
+            type="tel"
+            placeholder="Contoh: 08123456789 atau 628123456789"
+            value={whatsapp}
+            onChange={(e) => setWhatsapp(e.target.value)}
+            required
+            helperText="Wajib: Nomor WhatsApp aktif Anda (format Indonesia)."
+            disabled={loading || !!successMsg}
+          />
+
+          <div className="form-group">
+            <label className="form-label">
+              Jalur Pendaftaran
+              <span className="required-mark"> *</span>
+            </label>
+            <div className="radio-group">
+              <label className="radio-label">
+                <input
+                  type="radio"
+                  id="activate-reg-direct"
+                  name="registration_path"
+                  value="direct"
+                  checked={registrationPath === 'direct'}
+                  onChange={() => setRegistrationPath('direct')}
+                  disabled={loading || !!successMsg}
+                />
+                <span>Daftar sendiri</span>
+              </label>
+              <label className="radio-label">
+                <input
+                  type="radio"
+                  id="activate-reg-referral"
+                  name="registration_path"
+                  value="referral"
+                  checked={registrationPath === 'referral'}
+                  onChange={() => setRegistrationPath('referral')}
+                  disabled={loading || !!successMsg}
+                />
+                <span>Melalui undangan anggota lain</span>
+              </label>
+            </div>
+            <p className="form-helper-text">
+              Pilih apakah Anda mendaftar mandiri atau atas rekomendasi anggota lain.
+            </p>
+          </div>
+
+          {registrationPath === 'referral' && (
+            <Input
+              label="Nama Pengundang"
+              id="activate-inviter-name"
+              name="inviter_name"
+              type="text"
+              placeholder="Ketik nama atau panggilan pengundang Anda"
+              value={inviterName}
+              onChange={(e) => setInviterName(e.target.value)}
+              required
+              helperText="Wajib: 2-100 karakter nama anggota yang mengundang Anda."
+              disabled={loading || !!successMsg}
+            />
+          )}
 
           <Input
             label="Nama Perangkat (Opsional)"
