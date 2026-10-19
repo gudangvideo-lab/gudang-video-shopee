@@ -423,6 +423,181 @@ export async function handleDownloadVideo(request: Request, env: Env, videoId: s
   });
 }
 
+export interface ParsedByteRange {
+  start: number;
+  end: number;
+  length: number;
+}
+
+/**
+ * Melakukan parsing header HTTP Range: bytes=start-end
+ * Mengembalikan objek ParsedByteRange jika valid, null jika tidak ada/format non-bytes,
+ * atau string 'unsatisfiable' jika rentang berada di luar ukuran file.
+ */
+export function parseRangeHeader(
+  rangeHeader: string | null | undefined,
+  fileSize: number
+): ParsedByteRange | null | 'unsatisfiable' {
+  if (!rangeHeader || typeof rangeHeader !== 'string') return null;
+  const match = rangeHeader.trim().match(/^bytes=(\d*)-(\d*)$/i);
+  if (!match) return null;
+
+  const [, startStr, endStr] = match;
+  if (!startStr && !endStr) return null;
+
+  let start: number;
+  let end: number;
+
+  if (startStr && endStr) {
+    start = parseInt(startStr, 10);
+    end = parseInt(endStr, 10);
+    if (start > end) return 'unsatisfiable';
+  } else if (startStr) {
+    start = parseInt(startStr, 10);
+    end = fileSize - 1;
+  } else {
+    // Suffix range: bytes=-500 (500 byte terakhir)
+    const suffix = parseInt(endStr, 10);
+    if (suffix <= 0) return 'unsatisfiable';
+    start = Math.max(0, fileSize - suffix);
+    end = fileSize - 1;
+  }
+
+  if (fileSize <= 0 || start >= fileSize || end >= fileSize || start < 0) {
+    return 'unsatisfiable';
+  }
+
+  return {
+    start,
+    end,
+    length: end - start + 1
+  };
+}
+
+/**
+ * GET /api/videos/:id/stream
+ * Streaming video privat untuk pemutaran/pratinjau inline HTML5 video player.
+ * Mendukung HTTP Range Requests (206 Partial Content), Content-Disposition: inline,
+ * dan TIDAK menambah download_count sehingga statistik unduhan tetap akurat.
+ */
+export async function handleStreamVideo(request: Request, env: Env, videoId: string): Promise<Response> {
+  if (!env.DB) {
+    return jsonResponse({ error: 'DATABASE_UNAVAILABLE', message: 'Database D1 tidak terhubung.' }, 500);
+  }
+
+  const ctx = await validateSession(request, env.DB);
+  if (!ctx) {
+    return jsonResponse({
+      error: 'UNAUTHORIZED',
+      message: 'Sesi login tidak valid atau telah kedaluwarsa.'
+    }, 401);
+  }
+
+  if (ctx.user.status === 'suspended') {
+    return jsonResponse({
+      error: 'ACCOUNT_SUSPENDED',
+      message: 'Akun Anda telah dinonaktifkan oleh administrator.'
+    }, 403);
+  }
+
+  if (ctx.user.role === 'member' && !ctx.user.shopee_link) {
+    return jsonResponse({
+      error: 'SHOPEE_LINK_REQUIRED',
+      message: 'Anda wajib mendaftarkan tautan akun Shopee Affiliate sebelum dapat memutar video.'
+    }, 403);
+  }
+
+  if (!isValidUuid(videoId)) {
+    return jsonResponse({ error: 'INVALID_VIDEO_ID', message: 'Format ID video tidak valid.' }, 400);
+  }
+
+  const video = await env.DB
+    .prepare(`
+      SELECT id, title, r2_key, content_type, file_size, status
+      FROM videos
+      WHERE id = ?
+    `)
+    .bind(videoId)
+    .first<Pick<VideoRow, 'id' | 'title' | 'r2_key' | 'content_type' | 'file_size' | 'status'>>();
+
+  if (!video) {
+    return jsonResponse({
+      error: 'VIDEO_NOT_FOUND',
+      message: 'Video tidak ditemukan.'
+    }, 404);
+  }
+
+  // Jika video nonaktif, hanya administrator (admin / super_admin) yang diizinkan memutar (pratinjau)
+  if (video.status !== 'active' && ctx.user.role !== 'admin' && ctx.user.role !== 'super_admin') {
+    return jsonResponse({
+      error: 'VIDEO_NOT_FOUND',
+      message: 'Video tidak tersedia untuk diputar.'
+    }, 404);
+  }
+
+  if (!env.VIDEOS_BUCKET) {
+    return jsonResponse({
+      error: 'STORAGE_UNAVAILABLE',
+      message: 'Penyimpanan Cloudflare R2 tidak terhubung.'
+    }, 500);
+  }
+
+  const rangeHeader = request.headers.get('Range');
+  const parsedRange = parseRangeHeader(rangeHeader, video.file_size);
+
+  if (parsedRange === 'unsatisfiable') {
+    return new Response(null, {
+      status: 416,
+      headers: {
+        'Content-Range': `bytes */${video.file_size}`,
+        'Accept-Ranges': 'bytes'
+      }
+    });
+  }
+
+  // Ambil objek dari R2 dengan range jika diminta
+  const r2Options = parsedRange
+    ? { range: { offset: parsedRange.start, length: parsedRange.length } }
+    : undefined;
+
+  const object = await env.VIDEOS_BUCKET.get(video.r2_key, r2Options);
+  if (!object || !object.body) {
+    return jsonResponse({
+      error: 'OBJECT_NOT_FOUND',
+      message: 'Objek file video tidak ditemukan di penyimpanan privat.'
+    }, 404);
+  }
+
+  const ext = getExtensionFromMime(video.content_type);
+  const safeBaseName = sanitizeFilename(video.title);
+  const inlineFilename = `${safeBaseName}${ext}`;
+
+  const headers = new Headers();
+  headers.set('Content-Type', video.content_type || 'video/mp4');
+  headers.set('Accept-Ranges', 'bytes');
+  headers.set(
+    'Content-Disposition',
+    `inline; filename="${inlineFilename}"; filename*=UTF-8''${encodeURIComponent(inlineFilename)}`
+  );
+  headers.set('X-Content-Type-Options', 'nosniff');
+  headers.set('Cache-Control', 'private, no-cache, no-transform');
+
+  if (parsedRange) {
+    headers.set('Content-Range', `bytes ${parsedRange.start}-${parsedRange.end}/${video.file_size}`);
+    headers.set('Content-Length', String(parsedRange.length));
+    return new Response(object.body, {
+      status: 206,
+      headers
+    });
+  }
+
+  headers.set('Content-Length', String(video.file_size));
+  return new Response(object.body, {
+    status: 200,
+    headers
+  });
+}
+
 /**
  * POST /api/admin/videos
  * Mengunggah file video baru beserta metadata ke R2 privat dan D1.

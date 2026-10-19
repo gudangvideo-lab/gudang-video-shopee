@@ -7,13 +7,14 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useRouter } from '../router/Router';
-import { videoApi, shopeeApi, ApiClientError } from '../api/client';
-import { VideoItem, ShopeeAccountRequest, RackItem } from '../api/types';
+import { videoApi, shopeeApi, commissionApi, ApiClientError } from '../api/client';
+import { VideoItem, ShopeeAccountRequest, RackItem, CommissionProof } from '../api/types';
 import { Badge } from '../components/Badge';
 import { Button } from '../components/Button';
 import { Alert } from '../components/Alert';
 import { Modal } from '../components/Modal';
 import { Input } from '../components/Input';
+import { VideoPlayerModal } from '../components/VideoPlayerModal';
 
 export const UserDashboardPage: React.FC = () => {
   const { user, device, logout, refreshUser } = useAuth();
@@ -22,6 +23,7 @@ export const UserDashboardPage: React.FC = () => {
   const catalogRequestIdRef = useRef<number>(0);
 
   const [videos, setVideos] = useState<VideoItem[]>([]);
+  const [previewVideo, setPreviewVideo] = useState<VideoItem | null>(null);
   const [racks, setRacks] = useState<RackItem[]>([]);
   const [selectedRackId, setSelectedRackId] = useState<string>('all');
   const [loadingVideos, setLoadingVideos] = useState<boolean>(true);
@@ -45,12 +47,62 @@ export const UserDashboardPage: React.FC = () => {
   // Request history modal state
   const [showHistoryModal, setShowHistoryModal] = useState(false);
 
+  // Commission proof state (Fitur 9)
+  const [commissionProof, setCommissionProof] = useState<CommissionProof | null>(null);
+  const [loadingProof, setLoadingProof] = useState<boolean>(false);
+  const [showUploadProofModal, setShowUploadProofModal] = useState(false);
+  const [uploadingProof, setUploadingProof] = useState(false);
+  const [proofError, setProofError] = useState<string | null>(null);
+  const [proofSuccess, setProofSuccess] = useState<string | null>(null);
+  const [selectedProofFile, setSelectedProofFile] = useState<File | null>(null);
+  const [showProofPreviewModal, setShowProofPreviewModal] = useState(false);
+
   // Pagination state
   const [cursorHistory, setCursorHistory] = useState<string[]>([]);
   const [currentCursor, setCurrentCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState<boolean>(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [pageIndex, setPageIndex] = useState<number>(1);
+
+  const fetchCommissionProof = useCallback(async () => {
+    if (user?.role === 'member') {
+      try {
+        setLoadingProof(true);
+        const res = await commissionApi.getMemberProof();
+        setCommissionProof(res.proof);
+      } catch {
+        // Abaikan error background fetch
+      } finally {
+        setLoadingProof(false);
+      }
+    }
+  }, [user?.role]);
+
+  const handleUploadProofSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedProofFile) {
+      setProofError('Pilih file gambar bukti komisi terlebih dahulu.');
+      return;
+    }
+    setUploadingProof(true);
+    setProofError(null);
+    setProofSuccess(null);
+    try {
+      const res = await commissionApi.uploadMemberProof(selectedProofFile);
+      setCommissionProof(res.proof);
+      setProofSuccess(res.message || 'Bukti komisi berhasil disimpan.');
+      setSelectedProofFile(null);
+      setShowUploadProofModal(false);
+    } catch (err) {
+      if (err instanceof ApiClientError) {
+        setProofError(err.message);
+      } else {
+        setProofError('Gagal mengunggah bukti komisi.');
+      }
+    } finally {
+      setUploadingProof(false);
+    }
+  };
 
   const fetchShopeeRequests = useCallback(async () => {
     if (user?.role === 'member') {
@@ -164,9 +216,10 @@ export const UserDashboardPage: React.FC = () => {
       fetchCatalog({ cursor: null, page: 1 });
       if (user.role === 'member') {
         fetchShopeeRequests();
+        fetchCommissionProof();
       }
     }
-  }, [user, fetchRacks, fetchCatalog, fetchShopeeRequests]);
+  }, [user, fetchRacks, fetchCatalog, fetchShopeeRequests, fetchCommissionProof]);
 
   const handleInitialLinkSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -473,6 +526,95 @@ export const UserDashboardPage: React.FC = () => {
             </ul>
           </div>
         )}
+
+        {/* Card Bukti Komisi Mingguan (Fitur 9) */}
+        {user.role === 'member' && (
+          <div className="dashboard-card">
+            <div className="card-header-cluster">
+              <span className="card-icon">💰</span>
+              <div>
+                <h3 className="card-title">Bukti Komisi Mingguan</h3>
+                <p className="card-caption">Screenshot komisi Shopee Affiliate resmi Anda</p>
+              </div>
+            </div>
+
+            {loadingProof ? (
+              <p className="text-xs text-muted py-2">Memuat status bukti komisi...</p>
+            ) : commissionProof ? (
+              <>
+                <div className="telemetry-list">
+                  <div className="telemetry-item">
+                    <span className="telemetry-label">Status Bukti:</span>
+                    <span className="telemetry-val text-success font-medium">✓ Sudah Mengunggah Bukti Komisi</span>
+                  </div>
+                  <div className="telemetry-item">
+                    <span className="telemetry-label">Nama Berkas:</span>
+                    <span className="telemetry-val font-mono truncate max-w-xs">{commissionProof.original_filename}</span>
+                  </div>
+                  <div className="telemetry-item">
+                    <span className="telemetry-label">Ukuran Berkas:</span>
+                    <span className="telemetry-val">{(commissionProof.file_size / 1024).toFixed(1)} KB</span>
+                  </div>
+                  <div className="telemetry-item">
+                    <span className="telemetry-label">Waktu Unggah:</span>
+                    <span className="telemetry-val">{formatDate(commissionProof.updated_at)}</span>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    className="btn-sm"
+                    onClick={() => setShowProofPreviewModal(true)}
+                  >
+                    🔍 Lihat Bukti
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="btn-sm text-shopee border-shopee hover:bg-orange-50"
+                    onClick={() => {
+                      setProofError(null);
+                      setProofSuccess(null);
+                      setSelectedProofFile(null);
+                      setShowUploadProofModal(true);
+                    }}
+                  >
+                    🔄 Ganti Bukti Komisi
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800 mb-4">
+                  <p className="font-semibold">Belum Mengunggah Bukti Komisi</p>
+                  <p className="mt-1">
+                    Silakan unggah screenshot bukti pembagian komisi mingguan Anda untuk memverifikasi keaktifan akun.
+                  </p>
+                </div>
+                <Button
+                  variant="primary"
+                  className="btn-sm"
+                  onClick={() => {
+                    setProofError(null);
+                    setProofSuccess(null);
+                    setSelectedProofFile(null);
+                    setShowUploadProofModal(true);
+                  }}
+                >
+                  📤 Unggah Bukti Komisi
+                </Button>
+              </>
+            )}
+
+            {proofSuccess && (
+              <div className="mt-3">
+                <Alert type="success" onClose={() => setProofSuccess(null)}>
+                  {proofSuccess}
+                </Alert>
+              </div>
+            )}
+          </div>
+        )}
       </section>
 
       {/* Katalog Video atau Peringatan Terkunci */}
@@ -622,13 +764,24 @@ export const UserDashboardPage: React.FC = () => {
                       Buka Produk Shopee &#8599;
                     </a>
 
-                    <a
-                      href={videoApi.getDownloadUrl(video.id)}
-                      download
-                      className="btn btn-primary btn-sm download-btn"
-                    >
-                      ⬇ Unduh Video
-                    </a>
+                    <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                      <button
+                        type="button"
+                        className="btn btn-outline btn-sm"
+                        onClick={() => setPreviewVideo(video)}
+                        title="Putar pratinjau video"
+                      >
+                        ▶ Putar
+                      </button>
+
+                      <a
+                        href={videoApi.getDownloadUrl(video.id)}
+                        download
+                        className="btn btn-primary btn-sm download-btn"
+                      >
+                        ⬇ Unduh
+                      </a>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -823,6 +976,113 @@ export const UserDashboardPage: React.FC = () => {
           Keluar dari Sesi
         </Button>
       </footer>
+      {/* Modal Upload / Ganti Bukti Komisi (Fitur 9) */}
+      <Modal
+        isOpen={showUploadProofModal}
+        onClose={() => {
+          if (!uploadingProof) {
+            setShowUploadProofModal(false);
+            setSelectedProofFile(null);
+            setProofError(null);
+          }
+        }}
+        title={commissionProof ? 'Ganti Bukti Komisi Mingguan' : 'Unggah Bukti Komisi Mingguan'}
+      >
+        <form onSubmit={handleUploadProofSubmit} className="space-y-4">
+          <p className="text-xs text-muted">
+            {commissionProof
+              ? 'Mengunggah file baru akan langsung menggantikan bukti aktif sebelumnya. Berkas lama akan otomatis dibersihkan dari penyimpanan.'
+              : 'Unggah screenshot halaman komisi Shopee Affiliate Anda. File yang diizinkan berupa gambar JPG, PNG, atau WebP maksimal 5 MB.'}
+          </p>
+
+          {proofError && (
+            <Alert type="danger" onClose={() => setProofError(null)}>
+              {proofError}
+            </Alert>
+          )}
+
+          <div>
+            <label className="block text-xs font-medium text-slate-700 mb-1">
+              Pilih Berkas Gambar (Maks. 5 MB)
+            </label>
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              onChange={(e) => {
+                const files = e.target.files;
+                if (files && files[0]) {
+                  setSelectedProofFile(files[0]);
+                }
+              }}
+              disabled={uploadingProof}
+              className="block w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-primary file:text-white hover:file:bg-primary-dark cursor-pointer"
+              required
+            />
+          </div>
+
+          <div className="modal-actions-cluster mt-4">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setShowUploadProofModal(false);
+                setSelectedProofFile(null);
+                setProofError(null);
+              }}
+              disabled={uploadingProof}
+            >
+              Batal
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              disabled={!selectedProofFile || uploadingProof}
+              loading={uploadingProof}
+              loadingText={commissionProof ? 'Mengganti Bukti...' : 'Mengunggah...'}
+            >
+              {commissionProof ? 'Simpan Penggantian' : 'Unggah Bukti'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Modal Pratinjau Bukti Komisi (Fitur 9) */}
+      <Modal
+        isOpen={showProofPreviewModal && !!commissionProof}
+        onClose={() => setShowProofPreviewModal(false)}
+        title="Pratinjau Bukti Komisi Mingguan"
+      >
+        {commissionProof && (
+          <div className="space-y-4">
+            <div className="border border-slate-200 rounded-lg overflow-hidden max-h-[70vh] flex items-center justify-center bg-slate-900">
+              <img
+                src={commissionApi.getProofFileUrl(commissionProof.id)}
+                alt="Bukti Komisi"
+                className="max-h-[65vh] max-w-full object-contain"
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).alt = 'Gagal memuat gambar bukti komisi';
+                }}
+              />
+            </div>
+            <div className="text-xs text-muted flex justify-between items-center">
+              <span>{commissionProof.original_filename} ({(commissionProof.file_size / 1024).toFixed(1)} KB)</span>
+              <span>Diperbarui: {formatDate(commissionProof.updated_at)}</span>
+            </div>
+            <div className="flex justify-end">
+              <Button variant="outline" onClick={() => setShowProofPreviewModal(false)}>
+                Tutup
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Modal Pratinjau Video */}
+      <VideoPlayerModal
+        isOpen={!!previewVideo}
+        onClose={() => setPreviewVideo(null)}
+        video={previewVideo}
+      />
     </div>
   );
 };

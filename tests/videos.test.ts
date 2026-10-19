@@ -816,4 +816,234 @@ describe('Penyimpanan Video Privat Cloudflare R2 dan API Katalog Video', () => {
       expect(deactBody.error).toBe('UNAUTHORIZED');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // 14. FITUR 5: STREAMING DAN PRATINJAU VIDEO (GET /api/videos/:id/stream)
+  // ---------------------------------------------------------------------------
+  describe('Fitur 5: Streaming dan Pratinjau Video (GET /api/videos/:id/stream)', () => {
+    it('14.a. Member terautentikasi dapat melakukan streaming video aktif secara utuh dan tidak menambah download_count', async () => {
+      const rawData = new Uint8Array([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]);
+      const uploadRes = await uploadTestVideo({ fileBytes: rawData, status: 'active' });
+      expect(uploadRes.status).toBe(201);
+      const { video } = (await uploadRes.json()) as any;
+
+      const streamReq = new Request(`http://localhost:8787/api/videos/${video.id}/stream`, {
+        method: 'GET',
+        headers: { Cookie: member.sessionCookie }
+      });
+
+      const streamRes = await worker.fetch(streamReq, ctx.env);
+      expect(streamRes.status).toBe(200);
+      expect(streamRes.headers.get('Content-Type')).toBe('video/mp4');
+      expect(streamRes.headers.get('Accept-Ranges')).toBe('bytes');
+      expect(streamRes.headers.get('Content-Length')).toBe('8');
+      expect(streamRes.headers.get('Content-Disposition')).toContain('inline');
+      expect(streamRes.headers.get('X-Content-Type-Options')).toBe('nosniff');
+
+      const bodyBuffer = new Uint8Array(await streamRes.arrayBuffer());
+      expect(bodyBuffer).toEqual(rawData);
+
+      // Verifikasi bahwa download_count di database TIDAK bertambah (tetap 0)
+      const dbRow = await ctx.db
+        .prepare('SELECT download_count FROM videos WHERE id = ?')
+        .bind(video.id)
+        .first<{ download_count: number }>();
+      expect(dbRow?.download_count).toBe(0);
+    });
+
+    it('14.b. Mendukung HTTP Range Requests (206 Partial Content) untuk pemutaran dan pencarian posisi (seeking)', async () => {
+      // 12 byte MP4 dengan magic bytes ftyp di offset 4-7
+      const rawData = new Uint8Array([
+        0x00, 0x00, 0x00, 0x18, // 0-3
+        0x66, 0x74, 0x79, 0x70, // 4-7 ('ftyp')
+        0x10, 0x20, 0x30, 0x40  // 8-11
+      ]);
+      const uploadRes = await uploadTestVideo({ fileBytes: rawData, status: 'active' });
+      expect(uploadRes.status).toBe(201);
+      const { video } = (await uploadRes.json()) as any;
+
+      // 1. Range awal: bytes=0-3 (4 byte pertama)
+      const rangeReq1 = new Request(`http://localhost:8787/api/videos/${video.id}/stream`, {
+        method: 'GET',
+        headers: {
+          Cookie: member.sessionCookie,
+          Range: 'bytes=0-3'
+        }
+      });
+      const rangeRes1 = await worker.fetch(rangeReq1, ctx.env);
+      expect(rangeRes1.status).toBe(206);
+      expect(rangeRes1.headers.get('Content-Range')).toBe('bytes 0-3/12');
+      expect(rangeRes1.headers.get('Content-Length')).toBe('4');
+      expect(rangeRes1.headers.get('Accept-Ranges')).toBe('bytes');
+      expect(rangeRes1.headers.get('Content-Disposition')).toContain('inline');
+      const buf1 = new Uint8Array(await rangeRes1.arrayBuffer());
+      expect(buf1).toEqual(new Uint8Array([0x00, 0x00, 0x00, 0x18]));
+
+      // 2. Range byte 8 hingga akhir: bytes=8- (4 byte terakhir)
+      const rangeReq2 = new Request(`http://localhost:8787/api/videos/${video.id}/stream`, {
+        method: 'GET',
+        headers: {
+          Cookie: member.sessionCookie,
+          Range: 'bytes=8-'
+        }
+      });
+      const rangeRes2 = await worker.fetch(rangeReq2, ctx.env);
+      expect(rangeRes2.status).toBe(206);
+      expect(rangeRes2.headers.get('Content-Range')).toBe('bytes 8-11/12');
+      expect(rangeRes2.headers.get('Content-Length')).toBe('4');
+      const buf2 = new Uint8Array(await rangeRes2.arrayBuffer());
+      expect(buf2).toEqual(new Uint8Array([0x10, 0x20, 0x30, 0x40]));
+
+      // 3. Suffix range: bytes=-2 (2 byte terakhir)
+      const rangeReq3 = new Request(`http://localhost:8787/api/videos/${video.id}/stream`, {
+        method: 'GET',
+        headers: {
+          Cookie: member.sessionCookie,
+          Range: 'bytes=-2'
+        }
+      });
+      const rangeRes3 = await worker.fetch(rangeReq3, ctx.env);
+      expect(rangeRes3.status).toBe(206);
+      expect(rangeRes3.headers.get('Content-Range')).toBe('bytes 10-11/12');
+      expect(rangeRes3.headers.get('Content-Length')).toBe('2');
+      const buf3 = new Uint8Array(await rangeRes3.arrayBuffer());
+      expect(buf3).toEqual(new Uint8Array([0x30, 0x40]));
+
+      // 4. Unsatisfiable range: bytes=50-100 (melebihi ukuran file)
+      const invalidRangeReq = new Request(`http://localhost:8787/api/videos/${video.id}/stream`, {
+        method: 'GET',
+        headers: {
+          Cookie: member.sessionCookie,
+          Range: 'bytes=50-100'
+        }
+      });
+      const invalidRangeRes = await worker.fetch(invalidRangeReq, ctx.env);
+      expect(invalidRangeRes.status).toBe(416);
+      expect(invalidRangeRes.headers.get('Content-Range')).toBe('bytes */12');
+      expect(invalidRangeRes.headers.get('Accept-Ranges')).toBe('bytes');
+    });
+
+    it('14.c. Pengguna tanpa sesi atau sesi kedaluwarsa ditolak saat mengakses stream (401 UNAUTHORIZED)', async () => {
+      const uploadRes = await uploadTestVideo({ status: 'active' });
+      const { video } = (await uploadRes.json()) as any;
+
+      // Tanpa cookie sesi
+      const anonReq = new Request(`http://localhost:8787/api/videos/${video.id}/stream`, {
+        method: 'GET'
+      });
+      const anonRes = await worker.fetch(anonReq, ctx.env);
+      expect(anonRes.status).toBe(401);
+      const anonBody = (await anonRes.json()) as any;
+      expect(anonBody.error).toBe('UNAUTHORIZED');
+
+      // Dengan cookie palsu
+      const fakeReq = new Request(`http://localhost:8787/api/videos/${video.id}/stream`, {
+        method: 'GET',
+        headers: { Cookie: 'GVS_SESSION=invalid_session_token_123' }
+      });
+      const fakeRes = await worker.fetch(fakeReq, ctx.env);
+      expect(fakeRes.status).toBe(401);
+    });
+
+    it('14.d. Member tidak dapat memutar video nonaktif (404), tetapi Admin dan Super Admin diizinkan untuk pratinjau verifikasi', async () => {
+      const uploadRes = await uploadTestVideo({ status: 'inactive' });
+      const { video } = (await uploadRes.json()) as any;
+
+      // 1. Member mencoba memutar video nonaktif -> ditolak 404
+      const memberReq = new Request(`http://localhost:8787/api/videos/${video.id}/stream`, {
+        method: 'GET',
+        headers: { Cookie: member.sessionCookie }
+      });
+      const memberRes = await worker.fetch(memberReq, ctx.env);
+      expect(memberRes.status).toBe(404);
+      const memberBody = (await memberRes.json()) as any;
+      expect(memberBody.error).toBe('VIDEO_NOT_FOUND');
+
+      // 2. Admin mencoba memutar video nonaktif -> diizinkan 200 OK
+      const adminReq = new Request(`http://localhost:8787/api/videos/${video.id}/stream`, {
+        method: 'GET',
+        headers: { Cookie: admin.sessionCookie }
+      });
+      const adminRes = await worker.fetch(adminReq, ctx.env);
+      expect(adminRes.status).toBe(200);
+
+      // 3. Super Admin mencoba memutar video nonaktif -> diizinkan 200 OK
+      await ctx.db
+        .prepare(`UPDATE users SET role = 'super_admin' WHERE id = ?`)
+        .bind(admin.id)
+        .run();
+
+      const superAdminReq = new Request(`http://localhost:8787/api/videos/${video.id}/stream`, {
+        method: 'GET',
+        headers: { Cookie: admin.sessionCookie }
+      });
+      const superAdminRes = await worker.fetch(superAdminReq, ctx.env);
+      expect(superAdminRes.status).toBe(200);
+    });
+
+    it('14.e. Member tanpa shopee_link atau akun suspended ditolak dari streaming video', async () => {
+      const uploadRes = await uploadTestVideo({ status: 'active' });
+      const { video } = (await uploadRes.json()) as any;
+
+      // Member tanpa shopee_link
+      const userNoShopee = await seedTestUser(ctx.db, admin.id, 'member_tanpa_shopee', 'PassNoShopee123!');
+      await ctx.db
+        .prepare('UPDATE users SET shopee_link = NULL WHERE id = ?')
+        .bind(userNoShopee.id)
+        .run();
+
+      const noShopeeReq = new Request(`http://localhost:8787/api/videos/${video.id}/stream`, {
+        method: 'GET',
+        headers: { Cookie: userNoShopee.sessionCookie }
+      });
+      const noShopeeRes = await worker.fetch(noShopeeReq, ctx.env);
+      expect(noShopeeRes.status).toBe(403);
+      const noShopeeBody = (await noShopeeRes.json()) as any;
+      expect(noShopeeBody.error).toBe('SHOPEE_LINK_REQUIRED');
+    });
+
+    it('14.f. ID video tidak valid mengembalikan 400 dan video tidak terdaftar mengembalikan 404', async () => {
+      // ID tidak valid (bukan UUID)
+      const invalidIdReq = new Request('http://localhost:8787/api/videos/not-a-uuid-123/stream', {
+        method: 'GET',
+        headers: { Cookie: member.sessionCookie }
+      });
+      const invalidIdRes = await worker.fetch(invalidIdReq, ctx.env);
+      expect(invalidIdRes.status).toBe(400);
+      const invalidIdBody = (await invalidIdRes.json()) as any;
+      expect(invalidIdBody.error).toBe('INVALID_VIDEO_ID');
+
+      // UUID acak tidak ada di database
+      const randomUuid = crypto.randomUUID();
+      const notFoundReq = new Request(`http://localhost:8787/api/videos/${randomUuid}/stream`, {
+        method: 'GET',
+        headers: { Cookie: member.sessionCookie }
+      });
+      const notFoundRes = await worker.fetch(notFoundReq, ctx.env);
+      expect(notFoundRes.status).toBe(404);
+      const notFoundBody = (await notFoundRes.json()) as any;
+      expect(notFoundBody.error).toBe('VIDEO_NOT_FOUND');
+    });
+
+    it('14.g. Memastikan fitur unduhan video (/api/videos/:id/download) tetap berfungsi normal dan menambah download_count', async () => {
+      const uploadRes = await uploadTestVideo({ status: 'active' });
+      const { video } = (await uploadRes.json()) as any;
+
+      const dlReq = new Request(`http://localhost:8787/api/videos/${video.id}/download`, {
+        method: 'GET',
+        headers: { Cookie: member.sessionCookie }
+      });
+      const dlRes = await worker.fetch(dlReq, ctx.env);
+      expect(dlRes.status).toBe(200);
+      expect(dlRes.headers.get('Content-Disposition')).toContain('attachment');
+
+      // Beri sedikit jeda DB update
+      await new Promise((r) => setTimeout(r, 50));
+      const dbRow = await ctx.db
+        .prepare('SELECT download_count FROM videos WHERE id = ?')
+        .bind(video.id)
+        .first<{ download_count: number }>();
+      expect(dbRow?.download_count).toBeGreaterThanOrEqual(1);
+    });
+  });
 });

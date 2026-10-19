@@ -11,10 +11,10 @@
  * - POST  /api/super-admin/admins
  * - PATCH /api/super-admin/admins/:id/status
  * - POST  /api/super-admin/members
- * - POST  /api/admin/activation-codes (khusus Super Admin)
  *
  * Endpoint Admin & Super Admin:
  * - GET   /api/admin/activation-codes
+ * - POST  /api/admin/activation-codes (Penerbitan kode aktivasi Member baru)
  * - POST  /api/admin/users/:id/reset-code
  * - GET   /api/admin/users
  * - GET   /api/admin/audit-logs
@@ -86,10 +86,10 @@ export async function requireSuperAdmin(
 
 /**
  * Endpoint: POST /api/admin/activation-codes
- * Dibatasi eksklusif untuk Super Administrator sesuai rancangan hak akses.
+ * Diizinkan untuk Administrator dan Super Administrator untuk penerbitan kode aktivasi Member baru.
  */
 export async function handleCreateActivationCode(request: Request, db: D1Database): Promise<Response> {
-  const auth = await requireSuperAdmin(request, db);
+  const auth = await requireAdmin(request, db);
   if ('response' in auth) return auth.response;
 
   if (!verifyCsrf(request)) {
@@ -263,7 +263,55 @@ export async function handleIssueResetCode(request: Request, db: D1Database, tar
 }
 
 /**
+ * Helper untuk menyusun kondisi filter SQL database anggota (pencarian, peran, status, jalur, pengundang).
+ */
+function buildUserFilterConditions(url: URL): { whereClause: string; bindings: any[] } {
+  const q = url.searchParams.get('q')?.trim() || '';
+  const status = url.searchParams.get('status')?.trim() || '';
+  const role = url.searchParams.get('role')?.trim() || '';
+  const registrationPath = url.searchParams.get('registration_path')?.trim() || '';
+  const inviter = url.searchParams.get('inviter')?.trim() || '';
+
+  const conditions: string[] = [];
+  const bindings: any[] = [];
+
+  if (q) {
+    conditions.push(`(u.username LIKE ? ESCAPE '\\' OR u.whatsapp LIKE ? ESCAPE '\\' OR u.inviter_name LIKE ? ESCAPE '\\')`);
+    const escapedQ = `%${q.replace(/[%_\\]/g, '\\$&')}%`;
+    bindings.push(escapedQ, escapedQ, escapedQ);
+  }
+
+  if (status && status !== 'all') {
+    conditions.push(`u.status = ?`);
+    bindings.push(status);
+  }
+
+  if (role && role !== 'all') {
+    conditions.push(`u.role = ?`);
+    bindings.push(role);
+  }
+
+  if (registrationPath && registrationPath !== 'all') {
+    conditions.push(`u.registration_path = ?`);
+    bindings.push(registrationPath);
+  }
+
+  if (inviter && inviter !== 'all') {
+    if (inviter === '__none__') {
+      conditions.push(`(u.inviter_name IS NULL OR TRIM(u.inviter_name) = '')`);
+    } else {
+      conditions.push(`u.inviter_name = ?`);
+      bindings.push(inviter);
+    }
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  return { whereClause, bindings };
+}
+
+/**
  * Endpoint: GET /api/admin/users
+ * Mendukung pencarian, filter, dan server-side pagination dengan total akurat dan pengurutan deterministik.
  */
 export async function handleListUsers(request: Request, db: D1Database): Promise<Response> {
   const auth = await requireAdmin(request, db);
@@ -284,20 +332,366 @@ export async function handleListUsers(request: Request, db: D1Database): Promise
     device_last_seen_at: string | null;
   }
 
+  const url = new URL(request.url);
+  const { whereClause, bindings } = buildUserFilterConditions(url);
+
+  // Parameter paginasi dengan batas aman (limit: 1 s.d. 100, default 50 atau nilai yang dikirim)
+  const limitParam = parseInt(url.searchParams.get('limit') || '50', 10);
+  const limit = Number.isFinite(limitParam) ? Math.min(100, Math.max(1, limitParam)) : 50;
+  const pageParam = parseInt(url.searchParams.get('page') || '1', 10);
+  const page = Number.isFinite(pageParam) ? Math.max(1, pageParam) : 1;
+  const offset = (page - 1) * limit;
+
+  // 1. Hitung total seluruh baris yang cocok dengan kriteria filter (konsisten dan akurat)
+  const countSql = `
+    SELECT COUNT(*) AS total
+    FROM users u
+    ${whereClause}
+  `;
+  const countRow = await db
+    .prepare(countSql)
+    .bind(...bindings)
+    .first<{ total: number }>();
+  const total = countRow?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+
+  // 2. Ambil data dengan paginasi dan pengurutan deterministik (created_at DESC, id DESC)
+  const dataSql = `
+    SELECT
+      u.id, u.username, u.role, u.status, u.created_at, u.shopee_link,
+      u.whatsapp, u.registration_path, u.inviter_name,
+      d.device_name, d.bound_at AS device_bound_at, d.last_seen_at AS device_last_seen_at
+    FROM users u
+    LEFT JOIN user_devices d ON u.id = d.user_id AND d.is_active = 1
+    ${whereClause}
+    ORDER BY u.created_at DESC, u.id DESC
+    LIMIT ? OFFSET ?
+  `;
+  const dataBindings = [...bindings, limit, offset];
+
   const { results } = await db
-    .prepare(`
-      SELECT
-        u.id, u.username, u.role, u.status, u.created_at, u.shopee_link,
-        u.whatsapp, u.registration_path, u.inviter_name,
-        d.device_name, d.bound_at AS device_bound_at, d.last_seen_at AS device_last_seen_at
-      FROM users u
-      LEFT JOIN user_devices d ON u.id = d.user_id AND d.is_active = 1
-      ORDER BY u.created_at DESC
-      LIMIT 100
-    `)
+    .prepare(dataSql)
+    .bind(...dataBindings)
     .all<UserListRow>();
 
-  return jsonResponse({ status: 'ok', users: results || [] }, 200);
+  return jsonResponse({
+    status: 'ok',
+    users: results || [],
+    pagination: {
+      page,
+      limit,
+      total,
+      total_pages: totalPages
+    }
+  }, 200);
+}
+
+/**
+ * Endpoint: GET /api/admin/users/groups
+ * Mengembalikan agregasi ringkasan kelompok pengundang beserta jumlah anggota akurat per kelompok.
+ */
+export async function handleListUserGroups(request: Request, db: D1Database): Promise<Response> {
+  const auth = await requireAdmin(request, db);
+  if ('response' in auth) return auth.response;
+
+  interface GroupRow {
+    group_key: string;
+    inviter_name: string;
+    is_direct: number;
+    member_count: number;
+  }
+
+  const url = new URL(request.url);
+  const roleParam = url.searchParams.get('role')?.trim() || '';
+
+  // Pengelompokan pengundang hanya berlaku untuk akun Member.
+  // Jika admin/super_admin difilter secara eksplisit, kembalikan kelompok kosong.
+  if (roleParam && roleParam !== 'all' && roleParam !== 'member') {
+    return jsonResponse({
+      status: 'ok',
+      groups: [],
+      total_members: 0,
+      total_groups: 0
+    }, 200);
+  }
+
+  // Selalu tegakkan role = member dalam agregasi kelompok pengundang
+  const groupUrl = new URL(request.url);
+  groupUrl.searchParams.set('role', 'member');
+  const { whereClause, bindings } = buildUserFilterConditions(groupUrl);
+
+  const groupSql = `
+    SELECT
+      CASE
+        WHEN u.inviter_name IS NULL OR TRIM(u.inviter_name) = '' THEN '__direct__'
+        ELSE TRIM(u.inviter_name)
+      END AS group_key,
+      CASE
+        WHEN u.inviter_name IS NULL OR TRIM(u.inviter_name) = '' THEN 'Tanpa Pengundang (Daftar Mandiri)'
+        ELSE TRIM(u.inviter_name)
+      END AS inviter_name,
+      CASE
+        WHEN u.inviter_name IS NULL OR TRIM(u.inviter_name) = '' THEN 1
+        ELSE 0
+      END AS is_direct,
+      COUNT(*) AS member_count
+    FROM users u
+    ${whereClause}
+    GROUP BY group_key
+    ORDER BY is_direct ASC, inviter_name COLLATE NOCASE ASC
+  `;
+
+  const { results } = await db
+    .prepare(groupSql)
+    .bind(...bindings)
+    .all<GroupRow>();
+
+  const groups = (results || []).map((r) => ({
+    group_key: r.group_key,
+    inviter_name: r.inviter_name,
+    is_direct: Boolean(r.is_direct),
+    member_count: Number(r.member_count)
+  }));
+
+  const totalMembers = groups.reduce((acc, g) => acc + g.member_count, 0);
+
+  return jsonResponse({
+    status: 'ok',
+    groups,
+    total_members: totalMembers,
+    total_groups: groups.length
+  }, 200);
+}
+
+/**
+ * Endpoint: PATCH /api/admin/users/:id/status
+ * Menonaktifkan atau mengaktifkan kembali akun Member oleh Admin atau Super Admin.
+ * Jika dinonaktifkan: seluruh sesi aktif langsung dicabut seketika dan ikatan perangkat dinonaktifkan.
+ * Dibatasi ketat hanya untuk akun dengan role 'member'.
+ */
+export async function handleUpdateMemberStatus(
+  request: Request,
+  db: D1Database,
+  targetUserId: string
+): Promise<Response> {
+  const auth = await requireAdmin(request, db);
+  if ('response' in auth) return auth.response;
+
+  if (!verifyCsrf(request)) {
+    return jsonResponse({ error: 'CSRF_FORBIDDEN', message: 'Permintaan lintas situs diblokir.' }, 403);
+  }
+
+  if (!isValidUuid(targetUserId)) {
+    return jsonResponse({ error: 'INVALID_USER_ID', message: 'Format ID pengguna tidak valid.' }, 400);
+  }
+
+  if (targetUserId === auth.ctx.user.id) {
+    return jsonResponse({
+      error: 'SELF_STATUS_UPDATE_FORBIDDEN',
+      message: 'Anda tidak dapat mengubah status akun Anda sendiri.'
+    }, 403);
+  }
+
+  const targetUser = await db
+    .prepare('SELECT id, username, role, status FROM users WHERE id = ?')
+    .bind(targetUserId)
+    .first<{ id: string; username: string; role: string; status: string }>();
+
+  if (!targetUser) {
+    return jsonResponse({ error: 'USER_NOT_FOUND', message: 'Pengguna tidak ditemukan.' }, 404);
+  }
+
+  if (targetUser.role !== 'member') {
+    return jsonResponse({
+      error: 'INVALID_ROLE',
+      message: 'Tindakan ini hanya berlaku untuk akun Member. Akun Administrator dan Super Administrator tidak dapat diubah melalui fitur ini.'
+    }, 403);
+  }
+
+  const body = await parseJsonBody(request);
+  if (!body) {
+    return jsonResponse({ error: 'INVALID_JSON', message: 'Payload JSON tidak valid.' }, 400);
+  }
+
+  const { status, reason } = body;
+  if (status !== 'active' && status !== 'suspended') {
+    return jsonResponse({
+      error: 'INVALID_STATUS',
+      message: 'Status harus bernilai "active" atau "suspended".'
+    }, 400);
+  }
+
+  const actorRoleLabel = auth.ctx.user.role === 'super_admin' ? 'Super Admin' : 'Admin';
+  const auditAction = status === 'suspended' ? 'SUSPEND_USER' : 'ACTIVATE_USER';
+  const auditDetails =
+    typeof reason === 'string' && reason.trim()
+      ? reason.trim().slice(0, 200)
+      : `${actorRoleLabel} "${auth.ctx.user.username}" ${status === 'suspended' ? 'menonaktifkan' : 'mengaktifkan kembali'} akun Member "${targetUser.username}"`;
+
+  const auditId = crypto.randomUUID();
+  const ipAddress = request.headers.get('CF-Connecting-IP') || '127.0.0.1';
+  const userAgent = request.headers.get('User-Agent') || 'Unknown';
+
+  if (status === 'suspended') {
+    // Nonaktifkan akun member, cabut seluruh sesi seketika, dan nonaktifkan ikatan perangkat
+    await db.batch([
+      db.prepare(`UPDATE users SET status = 'suspended', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND role = 'member'`).bind(targetUserId),
+      db.prepare(`UPDATE user_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL`).bind(targetUserId),
+      db.prepare(`UPDATE user_devices SET is_active = 0 WHERE user_id = ?`).bind(targetUserId),
+      db.prepare(`
+        INSERT INTO audit_logs (id, admin_id, action, target_user_id, details, ip_address, user_agent)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(auditId, auth.ctx.user.id, auditAction, targetUserId, auditDetails, ipAddress, userAgent)
+    ]);
+  } else {
+    // Aktifkan kembali akun member
+    await db.batch([
+      db.prepare(`UPDATE users SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND role = 'member'`).bind(targetUserId),
+      db.prepare(`
+        INSERT INTO audit_logs (id, admin_id, action, target_user_id, details, ip_address, user_agent)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(auditId, auth.ctx.user.id, auditAction, targetUserId, auditDetails, ipAddress, userAgent)
+    ]);
+  }
+
+  return jsonResponse({
+    status: 'ok',
+    message: `Akun Member "${targetUser.username}" berhasil ${status === 'suspended' ? 'dinonaktifkan' : 'diaktifkan kembali'}.`,
+    user: {
+      id: targetUser.id,
+      username: targetUser.username,
+      role: 'member',
+      status
+    }
+  }, 200);
+}
+
+/**
+ * Endpoint: DELETE /api/admin/users/:id
+ * Menghapus akun Member secara aman dengan konfirmasi username.
+ * Diizinkan untuk Admin dan Super Admin. Dibatasi ketat hanya untuk akun role 'member'.
+ * Menjamin tidak ada penghapusan video, R2 key, atau audit logs historis.
+ */
+export async function handleDeleteMember(
+  request: Request,
+  db: D1Database,
+  targetUserId: string,
+  r2Bucket?: R2Bucket
+): Promise<Response> {
+  const auth = await requireAdmin(request, db);
+  if ('response' in auth) return auth.response;
+
+  if (!verifyCsrf(request)) {
+    return jsonResponse({ error: 'CSRF_FORBIDDEN', message: 'Permintaan lintas situs diblokir.' }, 403);
+  }
+
+  if (!isValidUuid(targetUserId)) {
+    return jsonResponse({ error: 'INVALID_USER_ID', message: 'Format ID pengguna tidak valid.' }, 400);
+  }
+
+  if (targetUserId === auth.ctx.user.id) {
+    return jsonResponse({
+      error: 'CANNOT_DELETE_SELF',
+      message: 'Anda tidak dapat menghapus akun Anda sendiri.'
+    }, 403);
+  }
+
+  const targetUser = await db
+    .prepare('SELECT id, username, role, status FROM users WHERE id = ?')
+    .bind(targetUserId)
+    .first<{ id: string; username: string; role: string; status: string }>();
+
+  if (!targetUser) {
+    return jsonResponse({ error: 'USER_NOT_FOUND', message: 'Pengguna tidak ditemukan.' }, 404);
+  }
+
+  if (targetUser.role !== 'member') {
+    return jsonResponse({
+      error: 'CANNOT_DELETE_NON_MEMBER',
+      message: 'Tindakan ini hanya dapat digunakan untuk menghapus akun Member. Akun Administrator dan Super Administrator dilindungi dari endpoint ini.'
+    }, 403);
+  }
+
+  const body = await parseJsonBody<{ confirm_username?: string }>(request);
+  if (!body || typeof body.confirm_username !== 'string') {
+    return jsonResponse({
+      error: 'MISSING_CONFIRMATION',
+      message: 'Wajib menyertakan nama pengguna konfirmasi untuk menghapus akun.'
+    }, 400);
+  }
+
+  if (body.confirm_username.trim().toLowerCase() !== targetUser.username.toLowerCase()) {
+    return jsonResponse({
+      error: 'CONFIRMATION_MISMATCH',
+      message: 'Nama pengguna konfirmasi tidak cocok.'
+    }, 400);
+  }
+
+  // 1. Ambil metadata bukti komisi sebelum baris dihapus dari D1
+  const existingProof = await db
+    .prepare('SELECT r2_key FROM commission_proofs WHERE user_id = ?')
+    .bind(targetUserId)
+    .first<{ r2_key: string }>();
+
+  const actorRoleLabel = auth.ctx.user.role === 'super_admin' ? 'Super Admin' : 'Admin';
+  const auditId = crypto.randomUUID();
+  const ipAddress = request.headers.get('CF-Connecting-IP') || '127.0.0.1';
+  const userAgent = request.headers.get('User-Agent') || 'Unknown';
+
+  try {
+    await db.batch([
+      // 1. Hapus riwayat permohonan shopee milik member ini
+      db.prepare('DELETE FROM shopee_account_requests WHERE user_id = ?').bind(targetUserId),
+      // 2. Hapus riwayat sesi, perangkat, dan reset code milik member
+      db.prepare('DELETE FROM device_reset_codes WHERE user_id = ?').bind(targetUserId),
+      db.prepare('DELETE FROM user_sessions WHERE user_id = ?').bind(targetUserId),
+      db.prepare('DELETE FROM user_devices WHERE user_id = ?').bind(targetUserId),
+      // 3. Null-kan used_by_user_id pada activation_codes jika pernah mengklaim
+      db.prepare('UPDATE activation_codes SET used_by_user_id = NULL WHERE used_by_user_id = ?').bind(targetUserId),
+      // 4. Hapus bukti komisi milik member
+      db.prepare('DELETE FROM commission_proofs WHERE user_id = ?').bind(targetUserId),
+      // 5. Null-kan target_user_id pada audit logs historis agar riwayat keamanan tetap utuh (zero delete audit logs)
+      db.prepare('UPDATE audit_logs SET target_user_id = NULL WHERE target_user_id = ?').bind(targetUserId),
+      // 6. Hapus member dari tabel users
+      db.prepare('DELETE FROM users WHERE id = ? AND role = "member"').bind(targetUserId),
+      // 6. Catat aksi DELETE_USER ke audit logs
+      db.prepare(`
+        INSERT INTO audit_logs (id, admin_id, action, target_user_id, details, ip_address, user_agent)
+        VALUES (?, ?, 'DELETE_USER', NULL, ?, ?, ?)
+      `).bind(
+        auditId,
+        auth.ctx.user.id,
+        `${actorRoleLabel} "${auth.ctx.user.username}" menghapus akun Member "${targetUser.username}" (ID: ${targetUserId})`,
+        ipAddress,
+        userAgent
+      )
+    ]);
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    return jsonResponse({
+      error: 'DELETE_MEMBER_FAILED',
+      message: `Gagal menghapus akun Member: ${errorMsg}`
+    }, 500);
+  }
+
+  // 2. Bersihkan berkas fisik bukti komisi di R2 setelah transaksi D1 berhasil
+  if (existingProof?.r2_key && r2Bucket) {
+    if (existingProof.r2_key.startsWith(`commission-proofs/${targetUserId}/`)) {
+      try {
+        await r2Bucket.delete(existingProof.r2_key);
+      } catch (r2Err) {
+        console.error(
+          `[DELETE_MEMBER] Gagal membersihkan objek bukti komisi R2 (${existingProof.r2_key}) untuk user ${targetUserId}:`,
+          r2Err instanceof Error ? r2Err.message : String(r2Err)
+        );
+      }
+    }
+  }
+
+  return jsonResponse({
+    status: 'ok',
+    message: `Akun Member "${targetUser.username}" berhasil dihapus secara permanen.`
+  }, 200);
 }
 
 /**
@@ -668,7 +1062,8 @@ export async function handleCreateMember(request: Request, db: D1Database): Prom
 export async function handleDeleteAccount(
   request: Request,
   db: D1Database,
-  targetUserId: string
+  targetUserId: string,
+  r2Bucket?: R2Bucket
 ): Promise<Response> {
   const auth = await requireSuperAdmin(request, db);
   if ('response' in auth) return auth.response;
@@ -719,6 +1114,12 @@ export async function handleDeleteAccount(
     }, 400);
   }
 
+  // 1. Ambil metadata bukti komisi jika target akun memiliki bukti komisi (khususnya member)
+  const existingProof = await db
+    .prepare('SELECT r2_key FROM commission_proofs WHERE user_id = ?')
+    .bind(targetUserId)
+    .first<{ r2_key: string }>();
+
   const auditId = crypto.randomUUID();
   const ipAddress = request.headers.get('CF-Connecting-IP') || '127.0.0.1';
   const userAgent = request.headers.get('User-Agent') || 'Unknown';
@@ -735,16 +1136,25 @@ export async function handleDeleteAccount(
       db.prepare('UPDATE device_reset_codes SET created_by = ? WHERE created_by = ?')
         .bind(auth.ctx.user.id, targetUserId),
       // 4. Hapus riwayat sesi, perangkat, dan reset code milik target user
+      db.prepare('DELETE FROM shopee_account_requests WHERE user_id = ?')
+        .bind(targetUserId),
       db.prepare('DELETE FROM device_reset_codes WHERE user_id = ?')
         .bind(targetUserId),
       db.prepare('DELETE FROM user_sessions WHERE user_id = ?')
         .bind(targetUserId),
       db.prepare('DELETE FROM user_devices WHERE user_id = ?')
         .bind(targetUserId),
-      // 5. Reassign audit logs yang dicatat target admin ke super admin
+      // 5. Null-kan used_by_user_id dan target_user_id, serta bersihkan bukti komisi jika ada
+      db.prepare('DELETE FROM commission_proofs WHERE user_id = ?')
+        .bind(targetUserId),
+      db.prepare('UPDATE activation_codes SET used_by_user_id = NULL WHERE used_by_user_id = ?')
+        .bind(targetUserId),
+      db.prepare('UPDATE audit_logs SET target_user_id = NULL WHERE target_user_id = ?')
+        .bind(targetUserId),
+      // 6. Reassign audit logs yang dicatat target admin ke super admin
       db.prepare('UPDATE audit_logs SET admin_id = ? WHERE admin_id = ?')
         .bind(auth.ctx.user.id, targetUserId),
-      // 6. Hapus target user dari tabel users
+      // 7. Hapus target user dari tabel users
       db.prepare('DELETE FROM users WHERE id = ?')
         .bind(targetUserId),
       // 7. Catat aksi DELETE_USER ke audit logs
@@ -765,6 +1175,20 @@ export async function handleDeleteAccount(
       error: 'DELETE_USER_FAILED',
       message: `Gagal menghapus akun: ${errorMsg}`
     }, 500);
+  }
+
+  // 2. Bersihkan berkas fisik bukti komisi di R2 setelah transaksi D1 berhasil
+  if (existingProof?.r2_key && r2Bucket) {
+    if (existingProof.r2_key.startsWith(`commission-proofs/${targetUserId}/`)) {
+      try {
+        await r2Bucket.delete(existingProof.r2_key);
+      } catch (r2Err) {
+        console.error(
+          `[DELETE_ACCOUNT] Gagal membersihkan objek bukti komisi R2 (${existingProof.r2_key}) untuk user ${targetUserId}:`,
+          r2Err instanceof Error ? r2Err.message : String(r2Err)
+        );
+      }
+    }
   }
 
   return jsonResponse({

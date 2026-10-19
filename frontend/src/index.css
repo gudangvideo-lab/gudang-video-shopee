@@ -871,6 +871,36 @@ body {
   display: flex;
   gap: 0.35rem;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Video Preview Player Styles */
+.video-player-container {
+  display: flex;
+  flex-direction: column;
+}
+
+.video-player-frame {
+  position: relative;
+  width: 100%;
+  background-color: #0b0f19;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.4);
+}
+
+.video-element {
+  width: 100%;
+  max-height: 52vh;
+  object-fit: contain;
+  display: block;
+}
+
+.video-preview-details {
+  background: var(--bg-surface);
 }
 
 .section-title {
@@ -1195,6 +1225,8 @@ body {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   width: 100%;
+  max-height: calc(100vh - 2rem);
+  max-height: calc(100dvh - 2rem);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1218,6 +1250,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .modal-title {
@@ -1237,12 +1270,56 @@ body {
 
 .modal-body {
   padding: 1.5rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1 1 auto;
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+
+.modal-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.modal-body::-webkit-scrollbar-thumb {
+  background-color: var(--border-color);
+  border-radius: 9999px;
+}
+
+.modal-body::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-muted);
+}
+
+.modal-footer {
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  flex-shrink: 0;
 }
 
 .modal-actions-cluster {
   display: flex;
   justify-content: flex-end;
   gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 640px) {
+  .modal-backdrop {
+    padding: 0.5rem;
+  }
+  .modal-card {
+    max-height: calc(100vh - 1rem);
+    max-height: calc(100dvh - 1rem);
+  }
+  .modal-header {
+    padding: 0.875rem 1rem;
+  }
+  .modal-body {
+    padding: 1rem;
+  }
 }
 
 /* Loading Screen */

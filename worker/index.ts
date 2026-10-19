@@ -13,6 +13,9 @@ import {
   handleListActivationCodes,
   handleIssueResetCode,
   handleListUsers,
+  handleListUserGroups,
+  handleUpdateMemberStatus,
+  handleDeleteMember,
   handleListAuditLogs,
   handleListAdmins,
   handleCreateAdmin,
@@ -32,6 +35,7 @@ import {
   handleListVideos,
   handleGetVideo,
   handleDownloadVideo,
+  handleStreamVideo,
   handleAdminUploadVideo,
   handleAdminListVideos,
   handleAdminUpdateVideo,
@@ -44,6 +48,13 @@ import {
   handleAdminListShopeeRequests,
   handleAdminReviewShopeeRequest
 } from './shopee';
+import {
+  handleUploadCommissionProof,
+  handleGetMemberCommissionProof,
+  handleGetAdminMemberCommissionProof,
+  handleViewCommissionProofFile,
+  handleAdminDeleteCommissionProof
+} from './commission';
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -118,6 +129,25 @@ export default {
       return handleIssueResetCode(request, env.DB, targetUserId);
     }
 
+    const userStatusMatch = path.match(/^\/api\/admin\/users\/([0-9a-fA-F-]{36})\/status$/);
+    if (userStatusMatch && method === 'PATCH') {
+      if (!env.DB) return databaseUnavailableResponse();
+      const targetUserId = decodeURIComponent(userStatusMatch[1]);
+      return handleUpdateMemberStatus(request, env.DB, targetUserId);
+    }
+
+    const adminUserDeleteMatch = path.match(/^\/api\/admin\/users\/([0-9a-fA-F-]{36})$/);
+    if (adminUserDeleteMatch && method === 'DELETE') {
+      if (!env.DB) return databaseUnavailableResponse();
+      const targetUserId = decodeURIComponent(adminUserDeleteMatch[1]);
+      return handleDeleteMember(request, env.DB, targetUserId, env.VIDEOS_BUCKET);
+    }
+
+    if (path === '/api/admin/users/groups' && method === 'GET') {
+      if (!env.DB) return databaseUnavailableResponse();
+      return handleListUserGroups(request, env.DB);
+    }
+
     if (path === '/api/admin/users' && method === 'GET') {
       if (!env.DB) return databaseUnavailableResponse();
       return handleListUsers(request, env.DB);
@@ -165,7 +195,7 @@ export default {
     if (superAdminUserDeleteMatch && method === 'DELETE') {
       if (!env.DB) return databaseUnavailableResponse();
       const targetUserId = decodeURIComponent(superAdminUserDeleteMatch[1]);
-      return handleDeleteAccount(request, env.DB, targetUserId);
+      return handleDeleteAccount(request, env.DB, targetUserId, env.VIDEOS_BUCKET);
     }
 
     // 5. Routing API Rak (Kategori Video)
@@ -206,6 +236,13 @@ export default {
       if (!env.DB) return databaseUnavailableResponse();
       const videoId = decodeURIComponent(videoDownloadMatch[1]);
       return handleDownloadVideo(request, env, videoId);
+    }
+
+    const videoStreamMatch = path.match(/^\/api\/videos\/([^/]+)\/stream$/);
+    if (videoStreamMatch && method === 'GET') {
+      if (!env.DB) return databaseUnavailableResponse();
+      const videoId = decodeURIComponent(videoStreamMatch[1]);
+      return handleStreamVideo(request, env, videoId);
     }
 
     const videoDetailMatch = path.match(/^\/api\/videos\/([^/]+)$/);
@@ -252,6 +289,28 @@ export default {
       if (!env.DB) return databaseUnavailableResponse();
       const requestId = decodeURIComponent(reviewShopeeMatch[1]);
       return handleAdminReviewShopeeRequest(request, env.DB, requestId);
+    }
+
+    // 9. Routing API Bukti Komisi Mingguan (Fitur 9)
+    if (path === '/api/member/commission-proof') {
+      if (!env.DB) return databaseUnavailableResponse();
+      if (method === 'POST') return handleUploadCommissionProof(request, env);
+      if (method === 'GET') return handleGetMemberCommissionProof(request, env.DB);
+    }
+
+    const commissionFileMatch = path.match(/^\/api\/commission-proofs\/([0-9a-fA-F-]{36})\/file$/);
+    if (commissionFileMatch && method === 'GET') {
+      if (!env.DB) return databaseUnavailableResponse();
+      const proofId = decodeURIComponent(commissionFileMatch[1]);
+      return handleViewCommissionProofFile(request, env, proofId);
+    }
+
+    const adminUserCommissionMatch = path.match(/^\/api\/admin\/users\/([0-9a-fA-F-]{36})\/commission-proof$/);
+    if (adminUserCommissionMatch) {
+      if (!env.DB) return databaseUnavailableResponse();
+      const targetUserId = decodeURIComponent(adminUserCommissionMatch[1]);
+      if (method === 'GET') return handleGetAdminMemberCommissionProof(request, env.DB, targetUserId);
+      if (method === 'DELETE') return handleAdminDeleteCommissionProof(request, env, targetUserId);
     }
 
     // 7. API yang belum didefinisikan

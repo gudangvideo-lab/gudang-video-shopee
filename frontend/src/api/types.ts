@@ -109,9 +109,41 @@ export interface AdminUserItem {
   device_last_seen_at: string | null;
 }
 
+export interface ListUsersOptions {
+  q?: string;
+  status?: 'all' | 'active' | 'suspended';
+  role?: 'all' | 'member' | 'admin' | 'super_admin';
+  registration_path?: 'all' | 'direct' | 'referral';
+  inviter?: string;
+  page?: number;
+  limit?: number;
+}
+
+export interface ListUsersPagination {
+  page: number;
+  limit: number;
+  total: number;
+  total_pages: number;
+}
+
 export interface ListUsersResponse {
   status: 'ok';
   users: AdminUserItem[];
+  pagination?: ListUsersPagination;
+}
+
+export interface UserGroupSummary {
+  group_key: string;
+  inviter_name: string;
+  is_direct: boolean;
+  member_count: number;
+}
+
+export interface ListUserGroupsResponse {
+  status: 'ok';
+  groups: UserGroupSummary[];
+  total_members: number;
+  total_groups: number;
 }
 
 export interface CreateAdminPayload {
@@ -134,6 +166,31 @@ export interface UpdateAdminStatusResponse {
   status: 'ok';
   message: string;
   admin: AdminUserItem;
+}
+
+export interface UpdateMemberStatusPayload {
+  status: 'active' | 'suspended';
+  reason?: string;
+}
+
+export interface UpdateMemberStatusResponse {
+  status: 'ok';
+  message: string;
+  user: {
+    id: string;
+    username: string;
+    role: 'member';
+    status: 'active' | 'suspended';
+  };
+}
+
+export interface DeleteMemberPayload {
+  confirm_username: string;
+}
+
+export interface DeleteMemberResponse {
+  status: 'ok';
+  message: string;
 }
 
 export interface ListAdminsResponse {
@@ -329,4 +386,20 @@ export interface DeleteAccountPayload {
 
 export interface MoveVideoRackPayload {
   target_rack_id: string;
+}
+
+export interface CommissionProof {
+  id: string;
+  user_id?: string;
+  original_filename: string;
+  file_size: number;
+  content_type: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CommissionProofResponse {
+  status: string;
+  proof: CommissionProof | null;
+  message?: string;
 }

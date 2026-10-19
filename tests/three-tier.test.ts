@@ -405,11 +405,12 @@ describe('Sistem Hak Akses Tiga Level: Super Admin, Admin, dan Member', () => {
       expect(loginErr.error).toBe('ACCOUNT_SUSPENDED');
     });
 
-    it('Penerbitan kode aktivasi dibatasi hanya untuk Super Admin', async () => {
+    it('Penerbitan kode aktivasi dapat dilakukan oleh Super Admin dan Admin, tetapi ditolak untuk Member', async () => {
       const superAdmin = await seedTestSuperAdmin(ctx.db, 'code_super');
       const admin = await seedTestAdmin(ctx.db, 'code_admin');
+      const member = await seedTestUser(ctx.db, superAdmin.id, 'code_member');
 
-      // Super Admin berhasil membuat kode aktivasi
+      // 1. Super Admin berhasil membuat kode aktivasi
       const superRes = await worker.fetch(new Request('http://localhost/api/admin/activation-codes', {
         method: 'POST',
         headers: {
@@ -417,13 +418,13 @@ describe('Sistem Hak Akses Tiga Level: Super Admin, Admin, dan Member', () => {
           Cookie: `${superAdmin.sessionCookie}; ${superAdmin.deviceCookie}`,
           'Origin': 'http://localhost'
         },
-        body: JSON.stringify({ max_uses: 1, expires_in_days: 7 })
+        body: JSON.stringify({ max_uses: 1, expires_in_days: 7, note: 'Kode dari Super Admin' })
       }), ctx.env);
       expect(superRes.status).toBe(201);
       const codeData = await superRes.json() as any;
       expect(codeData.data.code).toBeDefined();
 
-      // Regular Admin ditolak saat mencoba membuat kode aktivasi
+      // 2. Regular Admin juga berhasil membuat kode aktivasi Member (Fitur 6)
       const adminRes = await worker.fetch(new Request('http://localhost/api/admin/activation-codes', {
         method: 'POST',
         headers: {
@@ -431,11 +432,36 @@ describe('Sistem Hak Akses Tiga Level: Super Admin, Admin, dan Member', () => {
           Cookie: `${admin.sessionCookie}; ${admin.deviceCookie}`,
           'Origin': 'http://localhost'
         },
+        body: JSON.stringify({ max_uses: 1, expires_in_days: 7, note: 'Kode dari Admin untuk Member baru' })
+      }), ctx.env);
+      expect(adminRes.status).toBe(201);
+      const adminCodeData = await adminRes.json() as any;
+      expect(adminCodeData.data.code).toBeDefined();
+
+      // 3. Member biasa DITOLAK membuat kode aktivasi (403 Forbidden)
+      const memberRes = await worker.fetch(new Request('http://localhost/api/admin/activation-codes', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: `${member.sessionCookie}; ${member.deviceCookie}`,
+          'Origin': 'http://localhost'
+        },
         body: JSON.stringify({ max_uses: 1, expires_in_days: 7 })
       }), ctx.env);
-      expect(adminRes.status).toBe(403);
-      const err = await adminRes.json() as any;
-      expect(err.error).toBe('FORBIDDEN');
+      expect(memberRes.status).toBe(403);
+      const memberErr = await memberRes.json() as any;
+      expect(memberErr.error).toBe('FORBIDDEN');
+
+      // 4. Permintaan tanpa autentikasi ditolak (401 Unauthorized)
+      const anonRes = await worker.fetch(new Request('http://localhost/api/admin/activation-codes', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Origin': 'http://localhost'
+        },
+        body: JSON.stringify({ max_uses: 1, expires_in_days: 7 })
+      }), ctx.env);
+      expect(anonRes.status).toBe(401);
     });
 
     it('Aturan penerbitan kode reset perangkat per role', async () => {

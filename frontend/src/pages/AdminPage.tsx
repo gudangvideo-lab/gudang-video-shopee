@@ -7,28 +7,63 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useRouter } from '../router/Router';
-import { adminApi, superAdminApi, videoApi, shopeeApi, ApiClientError } from '../api/client';
+import { adminApi, superAdminApi, videoApi, shopeeApi, commissionApi, ApiClientError } from '../api/client';
 import {
   ActivationCodeItem,
   AdminUserItem,
   AuditLogItem,
   AdminVideoItem,
   ShopeeAccountRequest,
-  RackItem
+  RackItem,
+  UserGroupSummary,
+  CommissionProof
 } from '../api/types';
 import { Badge } from '../components/Badge';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
 import { Alert } from '../components/Alert';
 import { Modal } from '../components/Modal';
+import { VideoPlayerModal } from '../components/VideoPlayerModal';
 
 type AdminTab = 'overview' | 'videos' | 'racks' | 'codes' | 'users' | 'shopee' | 'admins' | 'logs';
+
+/**
+ * Memvalidasi dan mengekstrak tautan profil/akun Shopee yang aman untuk tautan eksternal.
+ * Hanya mengizinkan protokol https: atau http:, serta domain resmi Shopee (*.shopee.co.id, *.shope.ee).
+ * Menolak javascript:, data:, dan protokol atau domain tidak aman lainnya.
+ * Mengembalikan null jika tautan kosong atau tidak valid.
+ */
+export function getSafeShopeeUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return null;
+    }
+    const hostname = parsed.hostname.toLowerCase();
+    if (
+      hostname === 'shopee.co.id' ||
+      hostname.endsWith('.shopee.co.id') ||
+      hostname === 'shope.ee' ||
+      hostname.endsWith('.shope.ee')
+    ) {
+      return parsed.toString();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'overview' }) => {
   const { user } = useAuth();
   const { navigate } = useRouter();
 
   const adminVideosRequestIdRef = useRef<number>(0);
+  const adminUsersRequestIdRef = useRef<number>(0);
+  const initialUsersLoadedRef = useRef<boolean>(false);
 
   const [activeTab, setActiveTab] = useState<AdminTab>(initialTab);
 
@@ -62,10 +97,23 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
   const [newTargetPassword, setNewTargetPassword] = useState('');
   const [resettingUserPassword, setResettingUserPassword] = useState(false);
 
-  // Modal Delete Account (Super Admin only)
+  // Modal Delete Account (Fitur 8)
   const [targetUserForDeletion, setTargetUserForDeletion] = useState<AdminUserItem | null>(null);
   const [confirmDeleteUsername, setConfirmDeleteUsername] = useState('');
   const [deletingAccount, setDeletingAccount] = useState(false);
+
+  // Modal Member Status (Nonaktifkan / Aktifkan - Fitur 8)
+  const [targetUserForStatus, setTargetUserForStatus] = useState<{ user: AdminUserItem; action: 'suspend' | 'activate' } | null>(null);
+  const [statusReason, setStatusReason] = useState('');
+  const [updatingUserStatus, setUpdatingUserStatus] = useState(false);
+
+  // Modal Bukti Komisi Member (Fitur 9)
+  const [selectedMemberForProof, setSelectedMemberForProof] = useState<AdminUserItem | null>(null);
+  const [memberCommissionProof, setMemberCommissionProof] = useState<CommissionProof | null>(null);
+  const [loadingMemberProof, setLoadingMemberProof] = useState<boolean>(false);
+  const [deletingMemberProof, setDeletingMemberProof] = useState<boolean>(false);
+  const [confirmDeleteMemberProof, setConfirmDeleteMemberProof] = useState<boolean>(false);
+  const [memberProofError, setMemberProofError] = useState<string | null>(null);
 
   // Modal Create Member Langsung (Super Admin only)
   const [showCreateMemberModal, setShowCreateMemberModal] = useState(false);
@@ -97,6 +145,9 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
   // Modal Delete Video
   const [deletingVideo, setDeletingVideo] = useState<AdminVideoItem | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Modal Preview Video
+  const [previewVideo, setPreviewVideo] = useState<AdminVideoItem | null>(null);
 
   // Rack Modals
   const [showCreateRackModal, setShowCreateRackModal] = useState(false);
@@ -143,6 +194,25 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
 
   // Copy indicator state
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  // User Search, Filter, Grouping & Pagination state (Fitur 6)
+  const [userSearch, setUserSearch] = useState<string>('');
+  const [userFilterStatus, setUserFilterStatus] = useState<'all' | 'active' | 'suspended'>('all');
+  const [userFilterPath, setUserFilterPath] = useState<'all' | 'direct' | 'referral'>('all');
+  const [userFilterRole, setUserFilterRole] = useState<'all' | 'member' | 'admin' | 'super_admin'>('all');
+  const [userFilterInviter, setUserFilterInviter] = useState<string>('all');
+  const [userViewMode, setUserViewMode] = useState<'list' | 'grouped'>('list');
+  const [userPage, setUserPage] = useState<number>(1);
+  const [userPageSize, setUserPageSize] = useState<number>(15);
+  const [userTotalCount, setUserTotalCount] = useState<number>(0);
+  const [userTotalPages, setUserTotalPages] = useState<number>(1);
+  const [loadingUsersTab, setLoadingUsersTab] = useState<boolean>(false);
+  const [userGroups, setUserGroups] = useState<UserGroupSummary[]>([]);
+  const [loadingGroups, setLoadingGroups] = useState<boolean>(false);
+  const [availableInvitersList, setAvailableInvitersList] = useState<string[]>([]);
+  const [expandedGroupMembers, setExpandedGroupMembers] = useState<
+    Record<string, { users: AdminUserItem[]; loading: boolean; page: number; totalPages: number; total: number }>
+  >({});
 
   // Video Pagination & Filter state
   const [videoCursorHistory, setVideoCursorHistory] = useState<string[]>([]);
@@ -231,12 +301,204 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
     fetchVideosData({ rackId: rId, status: st, q, cursor: null, page: 1 });
   };
 
+  // Server-Driven User Database, Filter, Grouping & Pagination Helpers (Fitur 6)
+  const fetchUsersData = useCallback(async (options?: {
+    page?: number;
+    pageSize?: number;
+    q?: string;
+    role?: 'all' | 'member' | 'admin' | 'super_admin';
+    status?: 'all' | 'active' | 'suspended';
+    path?: 'all' | 'direct' | 'referral';
+    inviter?: string;
+  }) => {
+    const currentRequestId = ++adminUsersRequestIdRef.current;
+    setLoadingUsersTab(true);
+    try {
+      const activePage = options?.page !== undefined ? options.page : userPage;
+      const activePageSize = options?.pageSize !== undefined ? options.pageSize : userPageSize;
+      const activeQ = options?.q !== undefined ? options.q : userSearch;
+      const activeRole = options?.role !== undefined ? options.role : userFilterRole;
+      const activeStatus = options?.status !== undefined ? options.status : userFilterStatus;
+      const activePath = options?.path !== undefined ? options.path : userFilterPath;
+      const activeInviter = options?.inviter !== undefined ? options.inviter : userFilterInviter;
+
+      const res = await adminApi.listUsers({
+        page: activePage,
+        limit: activePageSize,
+        q: activeQ.trim() || undefined,
+        role: activeRole !== 'all' ? activeRole : undefined,
+        status: activeStatus !== 'all' ? activeStatus : undefined,
+        registration_path: activePath !== 'all' ? activePath : undefined,
+        inviter: activeInviter !== 'all' ? activeInviter : undefined,
+      });
+
+      if (currentRequestId !== adminUsersRequestIdRef.current) return;
+
+      setUsers(res.users || []);
+      if (res.pagination) {
+        setUserTotalCount(res.pagination.total);
+        setUserTotalPages(res.pagination.total_pages);
+        setUserPage(res.pagination.page);
+      } else {
+        setUserTotalCount(res.users?.length || 0);
+        setUserTotalPages(Math.max(1, Math.ceil((res.users?.length || 0) / activePageSize)));
+      }
+    } catch (err) {
+      if (currentRequestId !== adminUsersRequestIdRef.current) return;
+      if (err instanceof ApiClientError) {
+        setErrorMsg(err.message);
+      }
+    } finally {
+      if (currentRequestId === adminUsersRequestIdRef.current) {
+        setLoadingUsersTab(false);
+      }
+    }
+  }, [userPage, userPageSize, userSearch, userFilterRole, userFilterStatus, userFilterPath, userFilterInviter]);
+
+  const fetchUserGroupsData = useCallback(async (options?: {
+    q?: string;
+    role?: 'all' | 'member' | 'admin' | 'super_admin';
+    status?: 'all' | 'active' | 'suspended';
+    path?: 'all' | 'direct' | 'referral';
+    inviter?: string;
+  }) => {
+    setLoadingGroups(true);
+    try {
+      const activeQ = options?.q !== undefined ? options.q : userSearch;
+      const activeRole = options?.role !== undefined ? options.role : userFilterRole;
+      const activeStatus = options?.status !== undefined ? options.status : userFilterStatus;
+      const activePath = options?.path !== undefined ? options.path : userFilterPath;
+      const activeInviter = options?.inviter !== undefined ? options.inviter : userFilterInviter;
+
+      const res = await adminApi.listUserGroups({
+        q: activeQ.trim() || undefined,
+        role: activeRole !== 'all' ? activeRole : undefined,
+        status: activeStatus !== 'all' ? activeStatus : undefined,
+        registration_path: activePath !== 'all' ? activePath : undefined,
+        inviter: activeInviter !== 'all' ? activeInviter : undefined,
+      });
+
+      setUserGroups(res.groups || []);
+      setExpandedGroupMembers({});
+    } catch (err) {
+      if (err instanceof ApiClientError) {
+        setErrorMsg(err.message);
+      }
+    } finally {
+      setLoadingGroups(false);
+    }
+  }, [userSearch, userFilterRole, userFilterStatus, userFilterPath, userFilterInviter]);
+
+  const handleUserFilterChange = (
+    newRole?: typeof userFilterRole,
+    newStatus?: typeof userFilterStatus,
+    newPath?: typeof userFilterPath,
+    newInviter?: string
+  ) => {
+    const r = newRole !== undefined ? newRole : userFilterRole;
+    const s = newStatus !== undefined ? newStatus : userFilterStatus;
+    const p = newPath !== undefined ? newPath : userFilterPath;
+    const inv = newInviter !== undefined ? newInviter : userFilterInviter;
+
+    if (newRole !== undefined) setUserFilterRole(newRole);
+    if (newStatus !== undefined) setUserFilterStatus(newStatus);
+    if (newPath !== undefined) setUserFilterPath(newPath);
+    if (newInviter !== undefined) setUserFilterInviter(newInviter);
+
+    setUserPage(1);
+    fetchUsersData({ role: r, status: s, path: p, inviter: inv, page: 1 });
+    fetchUserGroupsData({ role: r, status: s, path: p, inviter: inv });
+  };
+
+  const handleResetUserFilters = () => {
+    setUserSearch('');
+    setUserFilterStatus('all');
+    setUserFilterPath('all');
+    setUserFilterRole('all');
+    setUserFilterInviter('all');
+    setUserPage(1);
+    fetchUsersData({ q: '', status: 'all', path: 'all', role: 'all', inviter: 'all', page: 1 });
+    fetchUserGroupsData({ q: '', status: 'all', path: 'all', role: 'all', inviter: 'all' });
+  };
+
+  // Debounce search effect to avoid excessive API requests
+  useEffect(() => {
+    if (!initialUsersLoadedRef.current) return;
+    const timer = setTimeout(() => {
+      setUserPage(1);
+      fetchUsersData({ q: userSearch, page: 1 });
+      fetchUserGroupsData({ q: userSearch });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [userSearch]);
+
+  const handleToggleGroup = async (groupKey: string, isDirect: boolean, targetPage: number = 1) => {
+    if (
+      expandedGroupMembers[groupKey] &&
+      targetPage === expandedGroupMembers[groupKey].page &&
+      expandedGroupMembers[groupKey].users.length > 0 &&
+      !expandedGroupMembers[groupKey].loading
+    ) {
+      setExpandedGroupMembers((prev) => {
+        const copy = { ...prev };
+        delete copy[groupKey];
+        return copy;
+      });
+      return;
+    }
+
+    setExpandedGroupMembers((prev) => ({
+      ...prev,
+      [groupKey]: {
+        users: prev[groupKey]?.users || [],
+        loading: true,
+        page: targetPage,
+        totalPages: prev[groupKey]?.totalPages || 1,
+        total: prev[groupKey]?.total || 0
+      }
+    }));
+
+    try {
+      const res = await adminApi.listUsers({
+        page: targetPage,
+        limit: 10,
+        q: userSearch.trim() || undefined,
+        role: 'member',
+        status: userFilterStatus !== 'all' ? userFilterStatus : undefined,
+        registration_path: userFilterPath !== 'all' ? userFilterPath : undefined,
+        inviter: isDirect ? '__none__' : groupKey
+      });
+
+      setExpandedGroupMembers((prev) => ({
+        ...prev,
+        [groupKey]: {
+          users: res.users || [],
+          loading: false,
+          page: res.pagination?.page || targetPage,
+          totalPages: res.pagination?.total_pages || 1,
+          total: res.pagination?.total || (res.users?.length || 0)
+        }
+      }));
+    } catch (err) {
+      setExpandedGroupMembers((prev) => ({
+        ...prev,
+        [groupKey]: {
+          ...prev[groupKey],
+          loading: false
+        }
+      }));
+      if (err instanceof ApiClientError) {
+        setErrorMsg(err.message);
+      }
+    }
+  };
+
   const fetchAllData = useCallback(async () => {
     const currentVideosRequestId = ++adminVideosRequestIdRef.current;
     setLoading(true);
     setErrorMsg(null);
     try {
-      const [videosRes, codesRes, usersRes, logsRes, shopeeRes, racksRes] = await Promise.all([
+      const [videosRes, codesRes, usersRes, logsRes, shopeeRes, racksRes, groupsRes] = await Promise.all([
         adminApi.listVideos({
           cursor: videoCurrentCursor || undefined,
           limit: 24,
@@ -245,10 +507,11 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
           q: videoSearch.trim() || undefined
         }),
         adminApi.listActivationCodes(),
-        adminApi.listUsers(),
+        adminApi.listUsers({ page: 1, limit: userPageSize }),
         adminApi.listAuditLogs(),
         shopeeApi.listAdminRequests('all'),
-        adminApi.listRacks()
+        adminApi.listRacks(),
+        adminApi.listUserGroups()
       ]);
 
       if (currentVideosRequestId === adminVideosRequestIdRef.current) {
@@ -259,6 +522,21 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
 
       setCodes(codesRes.codes || []);
       setUsers(usersRes.users || []);
+      if (usersRes.pagination) {
+        setUserTotalCount(usersRes.pagination.total);
+        setUserTotalPages(usersRes.pagination.total_pages);
+        setUserPage(usersRes.pagination.page);
+      } else {
+        setUserTotalCount(usersRes.users?.length || 0);
+        setUserTotalPages(1);
+      }
+
+      setUserGroups(groupsRes.groups || []);
+      const namedInviters = (groupsRes.groups || [])
+        .filter((g) => !g.is_direct && g.inviter_name)
+        .map((g) => g.inviter_name);
+      setAvailableInvitersList(namedInviters);
+
       setLogs(logsRes.logs || []);
       setShopeeRequests(shopeeRes.requests || []);
       setRacks(racksRes.racks || []);
@@ -274,6 +552,8 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
           setAdmins(adminsRes.admins || []);
         } catch {}
       }
+
+      initialUsersLoadedRef.current = true;
     } catch (err) {
       if (err instanceof ApiClientError) {
         setErrorMsg(err.message);
@@ -283,7 +563,7 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
     } finally {
       setLoading(false);
     }
-  }, [user?.role, videoCurrentCursor, videoFilterRackId, videoFilterStatus, videoSearch]);
+  }, [user?.role, userPageSize, videoCurrentCursor, videoFilterRackId, videoFilterStatus, videoSearch]);
 
   useEffect(() => {
     if (user && (user.role === 'admin' || user.role === 'super_admin')) {
@@ -611,10 +891,41 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
     }
   };
 
+  const handleUpdateUserStatusSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!targetUserForStatus) return;
+    setUpdatingUserStatus(true);
+    setErrorMsg(null);
+    try {
+      const newStatus = targetUserForStatus.action === 'suspend' ? 'suspended' : 'active';
+      const res = await adminApi.updateUserStatus(targetUserForStatus.user.id, {
+        status: newStatus,
+        reason: statusReason.trim() || undefined
+      });
+      setActionSuccessMsg(res.message);
+      setTargetUserForStatus(null);
+      setStatusReason('');
+      await fetchAllData();
+      if (userViewMode === 'grouped') {
+        fetchUserGroupsData();
+      } else {
+        fetchUsersData();
+      }
+    } catch (err) {
+      if (err instanceof ApiClientError) {
+        setErrorMsg(err.message);
+      } else {
+        setErrorMsg('Gagal memperbarui status akun member.');
+      }
+    } finally {
+      setUpdatingUserStatus(false);
+    }
+  };
+
   const handleDeleteAccountSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!targetUserForDeletion || !confirmDeleteUsername.trim()) return;
-    if (confirmDeleteUsername.trim() !== targetUserForDeletion.username) {
+    if (confirmDeleteUsername.trim().toLowerCase() !== targetUserForDeletion.username.toLowerCase()) {
       setErrorMsg('Konfirmasi username tidak cocok dengan akun yang dipilih.');
       return;
     }
@@ -622,13 +933,24 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
     setDeletingAccount(true);
     setErrorMsg(null);
     try {
-      await superAdminApi.deleteAccount(targetUserForDeletion.id, {
-        confirm_username: confirmDeleteUsername.trim()
-      });
-      setActionSuccessMsg(`Akun "${targetUserForDeletion.username}" (${targetUserForDeletion.role}) berhasil dihapus permanen secara aman.`);
+      if (user?.role === 'super_admin' && targetUserForDeletion.role !== 'member') {
+        await superAdminApi.deleteAccount(targetUserForDeletion.id, {
+          confirm_username: confirmDeleteUsername.trim()
+        });
+      } else {
+        await adminApi.deleteUser(targetUserForDeletion.id, {
+          confirm_username: confirmDeleteUsername.trim()
+        });
+      }
+      setActionSuccessMsg(`Akun "${targetUserForDeletion.username}" (${targetUserForDeletion.role === 'admin' ? 'Administrator' : 'Member'}) berhasil dihapus permanen secara aman.`);
       setTargetUserForDeletion(null);
       setConfirmDeleteUsername('');
       await fetchAllData();
+      if (userViewMode === 'grouped') {
+        fetchUserGroupsData();
+      } else {
+        fetchUsersData();
+      }
     } catch (err) {
       if (err instanceof ApiClientError) {
         setErrorMsg(err.message);
@@ -637,6 +959,46 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
       }
     } finally {
       setDeletingAccount(false);
+    }
+  };
+
+  const handleOpenMemberProof = async (member: AdminUserItem) => {
+    setSelectedMemberForProof(member);
+    setMemberCommissionProof(null);
+    setLoadingMemberProof(true);
+    setConfirmDeleteMemberProof(false);
+    setMemberProofError(null);
+    try {
+      const res = await commissionApi.getAdminMemberProof(member.id);
+      setMemberCommissionProof(res.proof);
+    } catch (err) {
+      if (err instanceof ApiClientError) {
+        setMemberProofError(err.message);
+      } else {
+        setMemberProofError('Gagal memuat bukti komisi member.');
+      }
+    } finally {
+      setLoadingMemberProof(false);
+    }
+  };
+
+  const handleDeleteMemberProofSubmit = async () => {
+    if (!selectedMemberForProof) return;
+    setDeletingMemberProof(true);
+    setMemberProofError(null);
+    try {
+      const res = await commissionApi.deleteAdminMemberProof(selectedMemberForProof.id);
+      setMemberCommissionProof(null);
+      setConfirmDeleteMemberProof(false);
+      setActionSuccessMsg(res.message || `Bukti komisi milik "${selectedMemberForProof.username}" berhasil dihapus.`);
+    } catch (err) {
+      if (err instanceof ApiClientError) {
+        setMemberProofError(err.message);
+      } else {
+        setMemberProofError('Gagal menghapus bukti komisi.');
+      }
+    } finally {
+      setDeletingMemberProof(false);
     }
   };
 
@@ -1171,6 +1533,14 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
                       <td>{item.uploaded_by_username ? <code>{item.uploaded_by_username}</code> : '-'}</td>
                       <td>
                         <div className="action-buttons-row">
+                          <Button
+                            variant="outline"
+                            className="btn-xs"
+                            onClick={() => setPreviewVideo(item)}
+                            title="Putar pratinjau video"
+                          >
+                            ▶ Putar
+                          </Button>
                           <a
                             href={videoApi.getDownloadUrl(item.id)}
                             download
@@ -1348,18 +1718,16 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
             <div>
               <h3>Daftar Kode Aktivasi ({codes.length})</h3>
               <p className="text-xs text-muted mt-1">
-                {user?.role === 'super_admin'
-                  ? 'Kode aktivasi sekali pakai dengan entropi 130-bit untuk pendaftaran akun Member.'
-                  : 'Daftar kode aktivasi (Penerbitan kode aktivasi baru hanya dapat dilakukan oleh Super Administrator).'}
+                Kode aktivasi sekali pakai dengan entropi 130-bit untuk pendaftaran akun Member baru.
               </p>
             </div>
-            {user?.role === 'super_admin' && (
+            {(user?.role === 'admin' || user?.role === 'super_admin') && (
               <Button
                 variant="primary"
                 className="btn-sm"
                 onClick={() => setShowCreateCodeModal(true)}
               >
-                + Buat Kode Baru
+                + Buat Kode Aktivasi Member
               </Button>
             )}
           </div>
@@ -1415,169 +1783,714 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
         </div>
       )}
 
-      {/* TAB 4: MANAJEMEN PENGGUNA */}
+      {/* TAB 4: MANAJEMEN PENGGUNA & DATABASE ANGGOTA */}
       {activeTab === 'users' && (
         <div className="tab-pane">
           <div className="table-header-bar">
             <div>
-              <h3>Daftar Seluruh Pengguna ({users.length})</h3>
+              <h3>Daftar Seluruh Pengguna & Anggota ({userTotalCount})</h3>
               <p className="text-xs text-muted mt-1">
-                Daftar akun terdaftar mencakup Super Admin, Admin operasional, dan Member affiliate.
+                Database anggota affiliate terdaftar, administrator operasional, dan Super Administrator.
               </p>
             </div>
-            {user?.role === 'super_admin' && (
+            <div className="flex gap-2">
+              <Button
+                variant="primary"
+                className="btn-sm"
+                onClick={() => setShowCreateCodeModal(true)}
+              >
+                + Tambah Member
+              </Button>
+              {user?.role === 'super_admin' && (
+                <Button
+                  variant="outline"
+                  className="btn-sm"
+                  onClick={() => setShowCreateMemberModal(true)}
+                >
+                  + Buat Member Langsung
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {/* Baris Pencarian dan Filter Pengguna */}
+          <div className="flex flex-col gap-3 my-4">
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <input
+                type="text"
+                className="form-input"
+                style={{ maxWidth: '280px' }}
+                placeholder="Cari username, WhatsApp, pengundang..."
+                value={userSearch}
+                maxLength={100}
+                onChange={(e) => {
+                  setUserSearch(e.target.value);
+                }}
+              />
+
+              <select
+                className="form-input"
+                style={{ maxWidth: '160px' }}
+                value={userFilterRole}
+                onChange={(e) => handleUserFilterChange(e.target.value as any, undefined, undefined, undefined)}
+                title="Filter Peran Akun"
+              >
+                <option value="all">Semua Peran</option>
+                <option value="member">Khusus Member</option>
+                <option value="admin">Admin</option>
+                <option value="super_admin">Super Admin</option>
+              </select>
+
+              <select
+                className="form-input"
+                style={{ maxWidth: '160px' }}
+                value={userFilterStatus}
+                onChange={(e) => handleUserFilterChange(undefined, e.target.value as any, undefined, undefined)}
+                title="Filter Status Akun"
+              >
+                <option value="all">Semua Status</option>
+                <option value="active">Aktif</option>
+                <option value="suspended">Dibekukan</option>
+              </select>
+
+              <select
+                className="form-input"
+                style={{ maxWidth: '180px' }}
+                value={userFilterPath}
+                onChange={(e) => handleUserFilterChange(undefined, undefined, e.target.value as any, undefined)}
+                title="Filter Jalur Pendaftaran"
+              >
+                <option value="all">Semua Jalur</option>
+                <option value="direct">Daftar Mandiri</option>
+                <option value="referral">Undangan (Referral)</option>
+              </select>
+
+              <select
+                className="form-input"
+                style={{ maxWidth: '200px' }}
+                value={userFilterInviter}
+                onChange={(e) => handleUserFilterChange(undefined, undefined, undefined, e.target.value)}
+                title="Filter Pengundang / Referrer"
+              >
+                <option value="all">Semua Pengundang</option>
+                <option value="__none__">Tanpa Pengundang</option>
+                {availableInvitersList.map((inv) => (
+                  <option key={inv} value={inv}>
+                    {inv}
+                  </option>
+                ))}
+              </select>
+
               <Button
                 variant="outline"
                 className="btn-sm"
-                onClick={() => setShowCreateMemberModal(true)}
+                onClick={handleResetUserFilters}
               >
-                + Buat Member Langsung
+                Reset Filter
               </Button>
-            )}
+            </div>
+
+            {/* Toolbar Mode Tampilan & Info Jumlah */}
+            <div className="flex justify-between items-center flex-wrap gap-2 text-xs text-muted pt-1">
+              <div>
+                Menampilkan <strong>{userTotalCount > 0 ? (userPage - 1) * userPageSize + 1 : 0} - {Math.min(userPage * userPageSize, userTotalCount)}</strong> dari total <strong>{userTotalCount}</strong> pengguna
+                {(userSearch || userFilterRole !== 'all' || userFilterStatus !== 'all' || userFilterPath !== 'all' || userFilterInviter !== 'all') && (
+                  <span className="text-primary font-medium ml-1">(Filter aktif)</span>
+                )}
+              </div>
+
+              {/* Toggle Mode Tampilan: Daftar vs Kelompok */}
+              <div className="flex items-center gap-1 bg-secondary p-1 rounded">
+                <button
+                  type="button"
+                  className={`btn-xs px-2 py-1 rounded font-medium ${userViewMode === 'list' ? 'bg-white shadow-sm text-primary font-semibold' : 'text-muted hover:text-primary'}`}
+                  onClick={() => setUserViewMode('list')}
+                >
+                  📋 Daftar Lengkap
+                </button>
+                <button
+                  type="button"
+                  className={`btn-xs px-2 py-1 rounded font-medium ${userViewMode === 'grouped' ? 'bg-white shadow-sm text-primary font-semibold' : 'text-muted hover:text-primary'}`}
+                  onClick={() => {
+                    setUserViewMode('grouped');
+                    if (userGroups.length === 0 && !loadingGroups) {
+                      fetchUserGroupsData();
+                    }
+                  }}
+                >
+                  👥 Kelompokkan per Pengundang
+                </button>
+              </div>
+            </div>
           </div>
 
-          <div className="table-responsive">
-            <table className="admin-table">
-              <thead>
-                <tr>
-                  <th>Nama Pengguna</th>
-                  <th>Peran</th>
-                  <th>Status Akun</th>
-                  <th>WhatsApp</th>
-                  <th>Jalur Pendaftaran</th>
-                  <th>Perangkat Terikat</th>
-                  <th>Aktivitas Terakhir</th>
-                  <th>Tindakan</th>
-                </tr>
-              </thead>
-              <tbody>
-                {users.length === 0 ? (
-                  <tr>
-                    <td colSpan={8} className="text-center text-muted p-6">
-                      Tidak ada pengguna ditemukan.
-                    </td>
-                  </tr>
-                ) : (
-                  users.map((item) => (
-                    <tr key={item.id}>
-                      <td className="font-semibold">{item.username}</td>
-                      <td>
-                        <Badge
-                          variant={
-                            item.role === 'super_admin'
-                              ? 'danger'
-                              : item.role === 'admin'
-                              ? 'warning'
-                              : 'neutral'
-                          }
-                        >
-                          {item.role === 'super_admin'
-                            ? 'Super Admin'
-                            : item.role === 'admin'
-                            ? 'Admin'
-                            : 'Member'}
-                        </Badge>
-                      </td>
-                      <td>
-                        <Badge variant={item.status === 'active' ? 'success' : 'danger'}>
-                          {item.status === 'active' ? 'Aktif' : 'Dibekukan'}
-                        </Badge>
-                      </td>
-                      <td>
-                        {item.whatsapp ? (
-                          <span className="font-mono text-xs">{item.whatsapp}</span>
-                        ) : (
-                          <span className="text-muted text-xs">-</span>
-                        )}
-                      </td>
-                      <td>
-                        {item.registration_path === 'referral' ? (
-                          <div className="text-xs">
-                            <span className="badge badge-warning text-xs">Undangan</span>
-                            {item.inviter_name && (
-                              <span className="text-muted ml-1" title={item.inviter_name}>
-                                ({item.inviter_name})
+          {/* MODE 1: DAFTAR LENGKAP DENGAN PAGINASI SERVER */}
+          {userViewMode === 'list' && (
+            <>
+              <div className="table-responsive">
+                <table className="admin-table">
+                  <thead>
+                    <tr>
+                      <th>Nama Pengguna</th>
+                      <th>Peran</th>
+                      <th>Status Akun</th>
+                      <th>Akun Shopee</th>
+                      <th>WhatsApp</th>
+                      <th>Jalur Pendaftaran</th>
+                      <th>Perangkat Terikat</th>
+                      <th>Aktivitas Terakhir</th>
+                      <th>Tindakan</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loadingUsersTab && users.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="text-center text-muted p-6">
+                          Memuat data pengguna dari server...
+                        </td>
+                      </tr>
+                    ) : users.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="text-center text-muted p-6">
+                          Tidak ada pengguna ditemukan.
+                        </td>
+                      </tr>
+                    ) : (
+                      users.map((item) => (
+                        <tr key={item.id}>
+                          <td className="font-semibold">{item.username}</td>
+                          <td>
+                            <Badge
+                              variant={
+                                item.role === 'super_admin'
+                                  ? 'danger'
+                                  : item.role === 'admin'
+                                  ? 'warning'
+                                  : 'neutral'
+                              }
+                            >
+                              {item.role === 'super_admin'
+                                ? 'Super Admin'
+                                : item.role === 'admin'
+                                ? 'Admin'
+                                : 'Member'}
+                            </Badge>
+                          </td>
+                          <td>
+                            <Badge variant={item.status === 'active' ? 'success' : 'danger'}>
+                              {item.status === 'active' ? 'Aktif' : 'Dibekukan'}
+                            </Badge>
+                          </td>
+                          <td>
+                            {(() => {
+                              const safeUrl = getSafeShopeeUrl(item.shopee_link);
+                              return safeUrl ? (
+                                <a
+                                  href={safeUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-primary hover:underline truncate-text inline-block max-w-[180px] align-middle text-xs"
+                                  title={safeUrl}
+                                >
+                                  {safeUrl} &#8599;
+                                </a>
+                              ) : (
+                                <span className="text-muted text-xs">—</span>
+                              );
+                            })()}
+                          </td>
+                          <td>
+                            {item.whatsapp ? (
+                              <span className="font-mono text-xs">{item.whatsapp}</span>
+                            ) : (
+                              <span className="text-muted text-xs">—</span>
+                            )}
+                          </td>
+                          <td>
+                            {item.registration_path === 'referral' ? (
+                              <div className="text-xs">
+                                <span className="badge badge-warning text-xs">Undangan</span>
+                                {item.inviter_name && (
+                                  <span className="text-muted ml-1" title={item.inviter_name}>
+                                    ({item.inviter_name})
+                                  </span>
+                                )}
+                              </div>
+                            ) : item.registration_path === 'direct' ? (
+                              <span className="badge badge-neutral text-xs">Daftar Sendiri</span>
+                            ) : (
+                              <span className="text-muted text-xs">—</span>
+                            )}
+                          </td>
+                          <td>
+                            {item.device_name ? (
+                              <span>💻 {item.device_name}</span>
+                            ) : (
+                              <span className="text-muted">
+                                {item.role === 'super_admin' ? 'Multi-Perangkat' : 'Belum terikat'}
                               </span>
                             )}
-                          </div>
-                        ) : item.registration_path === 'direct' ? (
-                          <span className="badge badge-neutral text-xs">Daftar Sendiri</span>
-                        ) : (
-                          <span className="text-muted text-xs">-</span>
-                        )}
-                      </td>
-                      <td>
-                        {item.device_name ? (
-                          <span>💻 {item.device_name}</span>
-                        ) : (
-                          <span className="text-muted">
-                            {item.role === 'super_admin' ? 'Multi-Perangkat' : 'Belum terikat'}
-                          </span>
-                        )}
-                      </td>
-                      <td>{formatDate(item.device_last_seen_at || item.created_at)}</td>
-                      <td>
-                        <div className="action-buttons-row">
-                          {item.role === 'super_admin' ? (
-                            <span className="text-xs text-muted">Multi-Perangkat</span>
-                          ) : item.role === 'admin' && user?.role !== 'super_admin' ? (
-                            <span className="text-xs text-muted">Khusus Super Admin</span>
-                          ) : (
-                            <Button
-                              variant="outline"
-                              className="btn-xs"
-                              onClick={() => {
-                                setSelectedUserForReset(item);
-                                setResetReason('');
-                              }}
-                            >
-                              Reset Perangkat
-                            </Button>
-                          )}
-                          {user?.role === 'super_admin' && (
-                            <>
-                              <Button
-                                variant="outline"
-                                className="btn-xs"
-                                onClick={() => {
-                                  setTargetUserForUsername(item);
-                                  setNewTargetUsername(item.username);
-                                }}
-                              >
-                                Ganti Username
-                              </Button>
-                              <Button
-                                variant="outline"
-                                className="btn-xs"
-                                onClick={() => {
-                                  setTargetUserForPasswordReset(item);
-                                  setNewTargetPassword('');
-                                }}
-                              >
-                                Reset Password
-                              </Button>
-                              {item.role !== 'super_admin' && (
+                          </td>
+                          <td>{formatDate(item.device_last_seen_at || item.created_at)}</td>
+                          <td>
+                            <div className="action-buttons-row">
+                              {item.role === 'super_admin' ? (
+                                <span className="text-xs text-muted">Multi-Perangkat</span>
+                              ) : item.role === 'admin' && user?.role !== 'super_admin' ? (
+                                <span className="text-xs text-muted">Khusus Super Admin</span>
+                              ) : (
                                 <Button
-                                  variant="danger"
+                                  variant="outline"
                                   className="btn-xs"
                                   onClick={() => {
-                                    setTargetUserForDeletion(item);
-                                    setConfirmDeleteUsername('');
+                                    setSelectedUserForReset(item);
+                                    setResetReason('');
                                   }}
                                 >
-                                  Hapus
+                                  Reset Perangkat
                                 </Button>
+                              )}
+                              {item.role === 'member' && (
+                                <>
+                                  <Button
+                                    variant="outline"
+                                    className="btn-xs text-blue-700 border-blue-300 hover:bg-blue-50"
+                                    onClick={() => handleOpenMemberProof(item)}
+                                  >
+                                    Bukti Komisi
+                                  </Button>
+                                  {item.status === 'active' ? (
+                                    <Button
+                                      variant="outline"
+                                      className="btn-xs text-amber-700 border-amber-300 hover:bg-amber-50"
+                                      onClick={() => {
+                                        setTargetUserForStatus({ user: item, action: 'suspend' });
+                                        setStatusReason('');
+                                      }}
+                                    >
+                                      Nonaktifkan
+                                    </Button>
+                                  ) : (
+                                    <Button
+                                      variant="outline"
+                                      className="btn-xs text-emerald-700 border-emerald-300 hover:bg-emerald-50"
+                                      onClick={() => {
+                                        setTargetUserForStatus({ user: item, action: 'activate' });
+                                        setStatusReason('');
+                                      }}
+                                    >
+                                      Aktifkan
+                                    </Button>
+                                  )}
+                                  <Button
+                                    variant="danger"
+                                    className="btn-xs"
+                                    onClick={() => {
+                                      setTargetUserForDeletion(item);
+                                      setConfirmDeleteUsername('');
+                                    }}
+                                  >
+                                    Hapus
+                                  </Button>
+                                </>
+                              )}
+                              {user?.role === 'super_admin' && (
+                                <>
+                                  <Button
+                                    variant="outline"
+                                    className="btn-xs"
+                                    onClick={() => {
+                                      setTargetUserForUsername(item);
+                                      setNewTargetUsername(item.username);
+                                    }}
+                                  >
+                                    Ganti Username
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    className="btn-xs"
+                                    onClick={() => {
+                                      setTargetUserForPasswordReset(item);
+                                      setNewTargetPassword('');
+                                    }}
+                                  >
+                                    Reset Password
+                                  </Button>
+                                  {item.role === 'admin' && (
+                                    <Button
+                                      variant="danger"
+                                      className="btn-xs"
+                                      onClick={() => {
+                                        setTargetUserForDeletion(item);
+                                        setConfirmDeleteUsername('');
+                                      }}
+                                    >
+                                      Hapus
+                                    </Button>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Navigasi Paginasi Pengguna */}
+              {userTotalCount > 0 && (
+                <div className="flex justify-between items-center flex-wrap gap-3 mt-3 text-xs text-muted">
+                  <div>
+                    Halaman <strong>{userPage}</strong> dari <strong>{userTotalPages}</strong> ({userTotalCount > 0 ? (userPage - 1) * userPageSize + 1 : 0} - {Math.min(userPage * userPageSize, userTotalCount)} dari {userTotalCount} pengguna)
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <label className="flex items-center gap-1 text-xs">
+                      <span>Per halaman:</span>
+                      <select
+                        className="form-input text-xs py-1 px-2"
+                        style={{ width: 'auto', display: 'inline-block' }}
+                        value={userPageSize}
+                        onChange={(e) => {
+                          const newSize = Number(e.target.value);
+                          setUserPageSize(newSize);
+                          setUserPage(1);
+                          fetchUsersData({ pageSize: newSize, page: 1 });
+                        }}
+                      >
+                        <option value={10}>10</option>
+                        <option value={15}>15</option>
+                        <option value={25}>25</option>
+                        <option value={50}>50</option>
+                      </select>
+                    </label>
+
+                    <Button
+                      variant="outline"
+                      className="btn-xs"
+                      disabled={userPage <= 1 || loadingUsersTab}
+                      onClick={() => {
+                        const prevPage = Math.max(1, userPage - 1);
+                        setUserPage(prevPage);
+                        fetchUsersData({ page: prevPage });
+                      }}
+                    >
+                      &laquo; Sebelumnya
+                    </Button>
+
+                    <Button
+                      variant="outline"
+                      className="btn-xs"
+                      disabled={userPage >= userTotalPages || loadingUsersTab}
+                      onClick={() => {
+                        const nextPage = Math.min(userTotalPages, userPage + 1);
+                        setUserPage(nextPage);
+                        fetchUsersData({ page: nextPage });
+                      }}
+                    >
+                      Berikutnya &raquo;
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* MODE 2: PENGELOMPOKAN BERDASARKAN PENGUNDANG */}
+          {userViewMode === 'grouped' && (
+            <div className="space-y-6">
+              <div className="alert-box alert-info">
+                <p className="text-xs">
+                  Dikelompokkan berdasarkan Pengundang / Referrer dari seluruh data pendaftaran anggota di database. Anggota tanpa pengundang dikelompokkan ke <strong>Tanpa Pengundang (Daftar Mandiri)</strong>. Klik <strong>Buka Anggota</strong> pada kelompok untuk memuat anggotanya.
+                </p>
+              </div>
+
+              {loadingGroups && userGroups.length === 0 ? (
+                <div className="text-center text-muted p-8 bg-surface rounded border">
+                  Menghitung kelompok pengundang dari server...
+                </div>
+              ) : userGroups.length === 0 ? (
+                <div className="text-center text-muted p-8 bg-surface rounded border">
+                  {userFilterRole === 'admin' || userFilterRole === 'super_admin'
+                    ? 'Pengelompokan pengundang hanya berlaku untuk akun Member.'
+                    : 'Tidak ada pengguna ditemukan.'}
+                </div>
+              ) : (
+                userGroups.map((group) => {
+                  const expandedInfo = expandedGroupMembers[group.group_key];
+                  const isExpanded = Boolean(expandedInfo);
+
+                  return (
+                    <div key={group.group_key} className="border border-border rounded-lg bg-surface overflow-hidden shadow-sm mb-4">
+                      <div className="flex justify-between items-center p-3 bg-secondary border-b border-border">
+                        <div className="flex items-center gap-2">
+                          <span className="text-base">{group.is_direct ? '🌐' : '👥'}</span>
+                          <span className="font-semibold text-sm">
+                            {group.is_direct ? 'Tanpa Pengundang (Daftar Mandiri)' : `Pengundang: ${group.inviter_name}`}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge variant={group.is_direct ? 'neutral' : 'warning'}>
+                            {group.member_count} Anggota
+                          </Badge>
+                          <Button
+                            variant="outline"
+                            className="btn-xs"
+                            onClick={() => handleToggleGroup(group.group_key, group.is_direct, 1)}
+                          >
+                            {isExpanded ? '▲ Tutup' : '▼ Buka Anggota'}
+                          </Button>
+                        </div>
+                      </div>
+
+                      {isExpanded && (
+                        <div className="p-2">
+                          {expandedInfo.loading ? (
+                            <div className="p-4 text-center text-xs text-muted">
+                              Memuat anggota kelompok...
+                            </div>
+                          ) : expandedInfo.users.length === 0 ? (
+                            <div className="p-4 text-center text-xs text-muted">
+                              Tidak ada anggota yang cocok dengan kriteria filter saat ini.
+                            </div>
+                          ) : (
+                            <>
+                              <div className="table-responsive" style={{ border: 'none', borderRadius: 0, boxShadow: 'none' }}>
+                                <table className="admin-table">
+                                  <thead>
+                                    <tr>
+                                      <th>Nama Pengguna</th>
+                                      <th>Peran</th>
+                                      <th>Status Akun</th>
+                                      <th>Akun Shopee</th>
+                                      <th>WhatsApp</th>
+                                      <th>Jalur Pendaftaran</th>
+                                      <th>Perangkat Terikat</th>
+                                      <th>Aktivitas Terakhir</th>
+                                      <th>Tindakan</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {expandedInfo.users.map((item) => (
+                                      <tr key={item.id}>
+                                        <td className="font-semibold">{item.username}</td>
+                                        <td>
+                                          <Badge
+                                            variant={
+                                              item.role === 'super_admin'
+                                                ? 'danger'
+                                                : item.role === 'admin'
+                                                ? 'warning'
+                                                : 'neutral'
+                                            }
+                                          >
+                                            {item.role === 'super_admin'
+                                              ? 'Super Admin'
+                                              : item.role === 'admin'
+                                              ? 'Admin'
+                                              : 'Member'}
+                                          </Badge>
+                                        </td>
+                                        <td>
+                                          <Badge variant={item.status === 'active' ? 'success' : 'danger'}>
+                                            {item.status === 'active' ? 'Aktif' : 'Dibekukan'}
+                                          </Badge>
+                                        </td>
+                                        <td>
+                                          {(() => {
+                                            const safeUrl = getSafeShopeeUrl(item.shopee_link);
+                                            return safeUrl ? (
+                                              <a
+                                                href={safeUrl}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="text-primary hover:underline truncate-text inline-block max-w-[180px] align-middle text-xs"
+                                                title={safeUrl}
+                                              >
+                                                {safeUrl} &#8599;
+                                              </a>
+                                            ) : (
+                                              <span className="text-muted text-xs">—</span>
+                                            );
+                                          })()}
+                                        </td>
+                                        <td>
+                                          {item.whatsapp ? (
+                                            <span className="font-mono text-xs">{item.whatsapp}</span>
+                                          ) : (
+                                            <span className="text-muted text-xs">—</span>
+                                          )}
+                                        </td>
+                                        <td>
+                                          {item.registration_path === 'referral' ? (
+                                            <div className="text-xs">
+                                              <span className="badge badge-warning text-xs">Undangan</span>
+                                              {item.inviter_name && (
+                                                <span className="text-muted ml-1" title={item.inviter_name}>
+                                                  ({item.inviter_name})
+                                                </span>
+                                              )}
+                                            </div>
+                                          ) : item.registration_path === 'direct' ? (
+                                            <span className="badge badge-neutral text-xs">Daftar Sendiri</span>
+                                          ) : (
+                                            <span className="text-muted text-xs">—</span>
+                                          )}
+                                        </td>
+                                        <td>
+                                          {item.device_name ? (
+                                            <span>💻 {item.device_name}</span>
+                                          ) : (
+                                            <span className="text-muted">
+                                              {item.role === 'super_admin' ? 'Multi-Perangkat' : 'Belum terikat'}
+                                            </span>
+                                          )}
+                                        </td>
+                                        <td>{formatDate(item.device_last_seen_at || item.created_at)}</td>
+                                        <td>
+                                          <div className="action-buttons-row">
+                                            {item.role === 'super_admin' ? (
+                                              <span className="text-xs text-muted">Multi-Perangkat</span>
+                                            ) : item.role === 'admin' && user?.role !== 'super_admin' ? (
+                                              <span className="text-xs text-muted">Khusus Super Admin</span>
+                                            ) : (
+                                              <Button
+                                                variant="outline"
+                                                className="btn-xs"
+                                                onClick={() => {
+                                                  setSelectedUserForReset(item);
+                                                  setResetReason('');
+                                                }}
+                                              >
+                                                Reset Perangkat
+                                              </Button>
+                                            )}
+                                            {item.role === 'member' && (
+                                              <>
+                                                <Button
+                                                  variant="outline"
+                                                  className="btn-xs text-blue-700 border-blue-300 hover:bg-blue-50"
+                                                  onClick={() => handleOpenMemberProof(item)}
+                                                >
+                                                  Bukti Komisi
+                                                </Button>
+                                                {item.status === 'active' ? (
+                                                  <Button
+                                                    variant="outline"
+                                                    className="btn-xs text-amber-700 border-amber-300 hover:bg-amber-50"
+                                                    onClick={() => {
+                                                      setTargetUserForStatus({ user: item, action: 'suspend' });
+                                                      setStatusReason('');
+                                                    }}
+                                                  >
+                                                    Nonaktifkan
+                                                  </Button>
+                                                ) : (
+                                                  <Button
+                                                    variant="outline"
+                                                    className="btn-xs text-emerald-700 border-emerald-300 hover:bg-emerald-50"
+                                                    onClick={() => {
+                                                      setTargetUserForStatus({ user: item, action: 'activate' });
+                                                      setStatusReason('');
+                                                    }}
+                                                  >
+                                                    Aktifkan
+                                                  </Button>
+                                                )}
+                                                <Button
+                                                  variant="danger"
+                                                  className="btn-xs"
+                                                  onClick={() => {
+                                                    setTargetUserForDeletion(item);
+                                                    setConfirmDeleteUsername('');
+                                                  }}
+                                                >
+                                                  Hapus
+                                                </Button>
+                                              </>
+                                            )}
+                                            {user?.role === 'super_admin' && (
+                                              <>
+                                                <Button
+                                                  variant="outline"
+                                                  className="btn-xs"
+                                                  onClick={() => {
+                                                    setTargetUserForUsername(item);
+                                                    setNewTargetUsername(item.username);
+                                                  }}
+                                                >
+                                                  Ganti Username
+                                                </Button>
+                                                <Button
+                                                  variant="outline"
+                                                  className="btn-xs"
+                                                  onClick={() => {
+                                                    setTargetUserForPasswordReset(item);
+                                                    setNewTargetPassword('');
+                                                  }}
+                                                >
+                                                  Reset Password
+                                                </Button>
+                                                {item.role === 'admin' && (
+                                                  <Button
+                                                    variant="danger"
+                                                    className="btn-xs"
+                                                    onClick={() => {
+                                                      setTargetUserForDeletion(item);
+                                                      setConfirmDeleteUsername('');
+                                                    }}
+                                                  >
+                                                    Hapus
+                                                  </Button>
+                                                )}
+                                              </>
+                                            )}
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+
+                              {/* Paginasi Internal Kelompok */}
+                              {expandedInfo.totalPages > 1 && (
+                                <div className="flex justify-between items-center px-3 py-2 text-xs text-muted border-t border-border">
+                                  <div>
+                                    Halaman <strong>{expandedInfo.page}</strong> dari <strong>{expandedInfo.totalPages}</strong> (Total {expandedInfo.total} anggota)
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <Button
+                                      variant="outline"
+                                      className="btn-xs"
+                                      disabled={expandedInfo.page <= 1 || expandedInfo.loading}
+                                      onClick={() => handleToggleGroup(group.group_key, group.is_direct, expandedInfo.page - 1)}
+                                    >
+                                      &laquo; Sebelumnya
+                                    </Button>
+                                    <Button
+                                      variant="outline"
+                                      className="btn-xs"
+                                      disabled={expandedInfo.page >= expandedInfo.totalPages || expandedInfo.loading}
+                                      onClick={() => handleToggleGroup(group.group_key, group.is_direct, expandedInfo.page + 1)}
+                                    >
+                                      Berikutnya &raquo;
+                                    </Button>
+                                  </div>
+                                </div>
                               )}
                             </>
                           )}
                         </div>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -2186,22 +3099,35 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
         </div>
       </Modal>
 
+      {/* MODAL: PRATINJAU VIDEO */}
+      <VideoPlayerModal
+        isOpen={!!previewVideo}
+        onClose={() => setPreviewVideo(null)}
+        video={previewVideo}
+      />
+
       {/* MODAL: BUAT KODE AKTIVASI */}
       <Modal
         isOpen={showCreateCodeModal}
         onClose={() => setShowCreateCodeModal(false)}
-        title="Buat Kode Aktivasi Sekali Pakai"
+        title="Buat Kode Aktivasi Member (Tambah Member Baru)"
       >
         <form onSubmit={handleCreateCodeSubmit} className="space-y-4">
+          <div className="alert-box alert-info">
+            <p className="text-xs">
+              Kode aktivasi sekali pakai akan dibuat. Berikan kode ini secara pribadi kepada calon Member untuk melakukan pendaftaran mandiri melalui halaman <code>/activate</code>.
+            </p>
+          </div>
+
           <Input
-            label="Catatan Penerima / Pembeli"
+            label="Catatan Calon Member / Penerima"
             id="code-note"
             name="note"
             type="text"
-            placeholder="Contoh: Akses Affiliate Pak Budi (WhatsApp 0812...)"
+            placeholder="Contoh: Calon Member Affiliate (WhatsApp 0812...)"
             value={newCodeNote}
             onChange={(e) => setNewCodeNote(e.target.value)}
-            helperText="Catatan internal admin untuk mengidentifikasi pembeli kode ini."
+            helperText="Catatan internal admin untuk mengidentifikasi calon Member penerima kode ini."
           />
 
           <Input
@@ -2578,7 +3504,95 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
         </form>
       </Modal>
 
-      {/* MODAL: HAPUS AKUN (SUPER ADMIN) */}
+      {/* MODAL: NONAKTIFKAN / AKTIFKAN MEMBER (FITUR 8) */}
+      <Modal
+        isOpen={!!targetUserForStatus}
+        onClose={() => {
+          setTargetUserForStatus(null);
+          setStatusReason('');
+        }}
+        title={
+          targetUserForStatus?.action === 'suspend'
+            ? `Nonaktifkan Member: ${targetUserForStatus?.user.username}`
+            : `Aktifkan Kembali Member: ${targetUserForStatus?.user.username}`
+        }
+      >
+        <form onSubmit={handleUpdateUserStatusSubmit} className="space-y-4">
+          {targetUserForStatus?.action === 'suspend' ? (
+            <>
+              <div className="alert-box alert-warning">
+                <p className="text-xs font-semibold">Perhatian Penonaktifan Akun:</p>
+                <p className="text-xs mt-1">
+                  Akun Member <strong>{targetUserForStatus.user.username}</strong> akan dinonaktifkan. Seluruh sesi aktif dan ikatan perangkat akan langsung dicabut seketika sehingga member tidak dapat mengakses gudang video hingga diaktifkan kembali.
+                </p>
+              </div>
+              <Input
+                label="Alasan Penonaktifan (Opsional)"
+                id="status-reason"
+                name="reason"
+                type="text"
+                placeholder="Contoh: Permintaan member / melanggar ketentuan lisensi"
+                value={statusReason}
+                onChange={(e) => setStatusReason(e.target.value)}
+                helperText="Alasan akan dicatat pada audit log administratif."
+              />
+              <div className="modal-actions-cluster mt-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setTargetUserForStatus(null);
+                    setStatusReason('');
+                  }}
+                  disabled={updatingUserStatus}
+                >
+                  Batal
+                </Button>
+                <Button
+                  type="submit"
+                  variant="danger"
+                  loading={updatingUserStatus}
+                  loadingText="Menonaktifkan..."
+                >
+                  Nonaktifkan Member
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="alert-box alert-info">
+                <p className="text-xs font-semibold">Konfirmasi Pengaktifan Kembali:</p>
+                <p className="text-xs mt-1">
+                  Akun Member <strong>{targetUserForStatus?.user.username}</strong> akan diaktifkan kembali. Member dapat kembali masuk menggunakan kredensial akunnya.
+                </p>
+              </div>
+              <div className="modal-actions-cluster mt-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setTargetUserForStatus(null);
+                    setStatusReason('');
+                  }}
+                  disabled={updatingUserStatus}
+                >
+                  Batal
+                </Button>
+                <Button
+                  type="submit"
+                  variant="primary"
+                  loading={updatingUserStatus}
+                  loadingText="Mengaktifkan..."
+                >
+                  Aktifkan Member
+                </Button>
+              </div>
+            </>
+          )}
+        </form>
+      </Modal>
+
+      {/* MODAL: HAPUS AKUN (FITUR 8) */}
       <Modal
         isOpen={!!targetUserForDeletion}
         onClose={() => {
@@ -2591,7 +3605,10 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
           <div className="alert-box alert-danger">
             <p className="text-xs font-semibold">Tindakan ini tidak dapat dibatalkan!</p>
             <p className="text-xs mt-1">
-              Akun <strong>{targetUserForDeletion?.username}</strong> ({targetUserForDeletion?.role}) akan dihapus permanen. Seluruh video dan kode aktivasi yang pernah dibuat pengguna ini akan otomatis dialihkan kepemilikannya ke akun Anda agar aman dan tidak hilang.
+              Akun <strong>{targetUserForDeletion?.username}</strong> ({targetUserForDeletion?.role === 'admin' ? 'Administrator' : 'Member'}) akan dihapus permanen dari sistem.
+            </p>
+            <p className="text-xs mt-1">
+              Seluruh file video katalog, tautan produk Shopee, dan catatan riwayat audit log keamanan tetap tersimpan aman dan tidak akan hilang.
             </p>
           </div>
           <Input
@@ -2603,6 +3620,7 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
             value={confirmDeleteUsername}
             onChange={(e) => setConfirmDeleteUsername(e.target.value)}
             required
+            autoComplete="off"
           />
           <div className="modal-actions-cluster mt-4">
             <Button
@@ -2619,7 +3637,7 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
             <Button
               type="submit"
               variant="danger"
-              disabled={confirmDeleteUsername !== targetUserForDeletion?.username || deletingAccount}
+              disabled={confirmDeleteUsername.trim().toLowerCase() !== targetUserForDeletion?.username.toLowerCase() || deletingAccount}
               loading={deletingAccount}
               loadingText="Menghapus..."
             >
@@ -2627,6 +3645,125 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
             </Button>
           </div>
         </form>
+      </Modal>
+
+      {/* MODAL: BUKTI KOMISI MEMBER (FITUR 9) */}
+      <Modal
+        isOpen={!!selectedMemberForProof}
+        onClose={() => {
+          if (!deletingMemberProof) {
+            setSelectedMemberForProof(null);
+            setMemberCommissionProof(null);
+            setConfirmDeleteMemberProof(false);
+            setMemberProofError(null);
+          }
+        }}
+        title={`Bukti Komisi Mingguan: ${selectedMemberForProof?.username || ''}`}
+        maxWidth="680px"
+      >
+        <div className="space-y-4">
+          {memberProofError && (
+            <Alert type="danger" onClose={() => setMemberProofError(null)}>
+              {memberProofError}
+            </Alert>
+          )}
+
+          {loadingMemberProof ? (
+            <div className="text-center py-8 text-muted text-sm">
+              Memuat data bukti komisi...
+            </div>
+          ) : memberCommissionProof ? (
+            <div className="space-y-4">
+              <div className="border border-slate-200 rounded-lg overflow-hidden max-h-[60vh] flex items-center justify-center bg-slate-900">
+                <img
+                  src={commissionApi.getProofFileUrl(memberCommissionProof.id)}
+                  alt="Bukti Komisi Member"
+                  className="max-h-[55vh] max-w-full object-contain"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).alt = 'Gagal memuat gambar bukti komisi';
+                  }}
+                />
+              </div>
+
+              <div className="bg-slate-50 border border-slate-200 rounded p-3 text-xs space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-muted">Nama Berkas:</span>
+                  <span className="font-mono font-medium">{memberCommissionProof.original_filename}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted">Ukuran:</span>
+                  <span>{(memberCommissionProof.file_size / 1024).toFixed(1)} KB</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted">Tipe Konten:</span>
+                  <span>{memberCommissionProof.content_type}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted">Waktu Upload Terakhir:</span>
+                  <span>{formatDate(memberCommissionProof.updated_at)}</span>
+                </div>
+              </div>
+
+              {confirmDeleteMemberProof ? (
+                <div className="p-3 bg-red-50 border border-red-200 rounded text-xs text-red-800 space-y-3">
+                  <p className="font-semibold">Konfirmasi Penghapusan Bukti Komisi</p>
+                  <p>
+                    Apakah Anda yakin ingin menghapus bukti komisi aktif milik Member <strong>{selectedMemberForProof?.username}</strong>? Berkas akan dihapus permanen dari penyimpanan R2.
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      className="btn-xs"
+                      onClick={() => setConfirmDeleteMemberProof(false)}
+                      disabled={deletingMemberProof}
+                    >
+                      Batal
+                    </Button>
+                    <Button
+                      variant="danger"
+                      className="btn-xs"
+                      onClick={handleDeleteMemberProofSubmit}
+                      loading={deletingMemberProof}
+                      loadingText="Menghapus..."
+                    >
+                      Ya, Hapus Bukti
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex justify-between items-center pt-2">
+                  <Button
+                    variant="danger"
+                    className="btn-sm"
+                    onClick={() => setConfirmDeleteMemberProof(true)}
+                  >
+                    🗑️ Hapus Bukti Aktif
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="btn-sm"
+                    onClick={() => setSelectedMemberForProof(null)}
+                  >
+                    Tutup
+                  </Button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="py-6 text-center space-y-2">
+              <div className="text-3xl">📭</div>
+              <p className="text-sm font-semibold text-slate-700">Belum Memiliki Bukti Komisi Aktif</p>
+              <p className="text-xs text-muted">
+                Member <strong>{selectedMemberForProof?.username}</strong> belum mengunggah screenshot pembagian komisi mingguan.
+              </p>
+              <div className="pt-4">
+                <Button variant="outline" className="btn-sm" onClick={() => setSelectedMemberForProof(null)}>
+                  Tutup
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
       </Modal>
 
       {/* MODAL: BUAT RAK BARU */}

@@ -9,16 +9,17 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { authApi, adminApi, ApiClientError } from '../api/client';
+import { authApi, adminApi, videoApi, commissionApi, ApiClientError } from '../api/client';
 import { Badge } from '../components/Badge';
 import { Alert } from '../components/Alert';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
+import { VideoPlayerModal } from '../components/VideoPlayerModal';
 import { LoginPage } from '../pages/LoginPage';
 import { ActivatePage } from '../pages/ActivatePage';
 import { ResetDevicePage } from '../pages/ResetDevicePage';
 import { UserDashboardPage } from '../pages/UserDashboardPage';
-import { AdminPage } from '../pages/AdminPage';
+import { AdminPage, getSafeShopeeUrl } from '../pages/AdminPage';
 import { AuthProvider } from '../context/AuthContext';
 import * as authContext from '../context/AuthContext';
 import { RouterProvider } from '../router/Router';
@@ -620,5 +621,481 @@ describe('Frontend UI Components & Page Rendering', () => {
     } finally {
       authSpy.mockRestore();
     }
+  });
+
+  // ---------------------------------------------------------------------------
+  // FITUR 3: TAMPILKAN TAUTAN AKUN SHOPEE ANGGOTA DI ADMIN PAGE
+  // ---------------------------------------------------------------------------
+  it('tabel pengguna AdminPage memuat kolom Akun Shopee dan empty state colSpan 9', () => {
+    const authSpy = vi.spyOn(authContext, 'useAuth').mockReturnValue({
+      user: {
+        id: 'usr-admin-1',
+        username: 'admin_official',
+        role: 'admin',
+        status: 'active'
+      },
+      device: null,
+      loading: false,
+      error: null,
+      refreshUser: vi.fn(),
+      logout: vi.fn(),
+      setUserFromResponse: vi.fn()
+    });
+
+    try {
+      const html = renderToStaticMarkup(
+        <RouterProvider>
+          <AdminPage initialTab="users" />
+        </RouterProvider>
+      );
+      expect(html).toContain('<th>Akun Shopee</th>');
+      expect(html.toLowerCase()).toContain('colspan="9"');
+      expect(html).toContain('Tidak ada pengguna ditemukan.');
+    } finally {
+      authSpy.mockRestore();
+    }
+  });
+
+  it('getSafeShopeeUrl memvalidasi URL resmi Shopee dan menolak URL tidak aman atau protokol terlarang', () => {
+    // Valid domain & protocol
+    expect(getSafeShopeeUrl('https://shopee.co.id/official_store')).toBe('https://shopee.co.id/official_store');
+    expect(getSafeShopeeUrl('https://shope.ee/shortlink123')).toBe('https://shope.ee/shortlink123');
+    expect(getSafeShopeeUrl('https://affiliate.shopee.co.id/user')).toBe('https://affiliate.shopee.co.id/user');
+    expect(getSafeShopeeUrl('http://shopee.co.id/http_link')).toBe('http://shopee.co.id/http_link');
+
+    // Unsafe protocol
+    expect(getSafeShopeeUrl('javascript:alert(1)')).toBeNull();
+    expect(getSafeShopeeUrl('data:text/html,<html>')).toBeNull();
+    expect(getSafeShopeeUrl('vbscript:msgbox(1)')).toBeNull();
+    expect(getSafeShopeeUrl('file:///etc/passwd')).toBeNull();
+
+    // Invalid / Phishing domain
+    expect(getSafeShopeeUrl('https://shopee.co.id.attacker.com')).toBeNull();
+    expect(getSafeShopeeUrl('https://fake-shope.ee')).toBeNull();
+    expect(getSafeShopeeUrl('https://google.com')).toBeNull();
+
+    // Empty / null / malformed
+    expect(getSafeShopeeUrl(null)).toBeNull();
+    expect(getSafeShopeeUrl(undefined)).toBeNull();
+    expect(getSafeShopeeUrl('')).toBeNull();
+    expect(getSafeShopeeUrl('   ')).toBeNull();
+    expect(getSafeShopeeUrl('not a url')).toBeNull();
+  });
+
+  it('tabel pengguna merender tautan Shopee valid dengan target _blank dan rel noopener noreferrer, serta menampilkan — untuk URL tidak valid atau kosong', () => {
+    // Helper fungsi render sel tabel identik dengan AdminPage
+    const renderShopeeCell = (shopeeLink: string | null | undefined) => {
+      const safeUrl = getSafeShopeeUrl(shopeeLink);
+      return renderToStaticMarkup(
+        <td>
+          {safeUrl ? (
+            <a
+              href={safeUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary hover:underline truncate-text inline-block max-w-[180px] align-middle text-xs"
+              title={safeUrl}
+            >
+              {safeUrl} &#8599;
+            </a>
+          ) : (
+            <span className="text-muted text-xs">—</span>
+          )}
+        </td>
+      );
+    };
+
+    // 1. Tautan Shopee valid
+    const validHtml = renderShopeeCell('https://shope.ee/valid_affiliate_123');
+    expect(validHtml).toContain('href="https://shope.ee/valid_affiliate_123"');
+    expect(validHtml).toContain('target="_blank"');
+    expect(validHtml).toContain('rel="noopener noreferrer"');
+    expect(validHtml).toContain('https://shope.ee/valid_affiliate_123');
+
+    // 2. Null atau undefined
+    const nullHtml = renderShopeeCell(null);
+    expect(nullHtml).toContain('—');
+    expect(nullHtml).not.toContain('<a');
+
+    // 3. String kosong
+    const emptyHtml = renderShopeeCell('');
+    expect(emptyHtml).toContain('—');
+    expect(emptyHtml).not.toContain('<a');
+
+    // 4. URL berbahaya javascript:
+    const jsHtml = renderShopeeCell('javascript:alert(document.cookie)');
+    expect(jsHtml).toContain('—');
+    expect(jsHtml).not.toContain('<a');
+    expect(jsHtml).not.toContain('javascript');
+
+    // 5. URL data:
+    const dataHtml = renderShopeeCell('data:text/html,<script>alert(1)</script>');
+    expect(dataHtml).toContain('—');
+    expect(dataHtml).not.toContain('<a');
+
+    // 6. Phishing / domain asing
+    const phishingHtml = renderShopeeCell('https://shopee.co.id.phishing.com/steal');
+    expect(phishingHtml).toContain('—');
+    expect(phishingHtml).not.toContain('<a');
+  });
+
+  it('videoApi.getStreamUrl dan getPreviewUrl mengembalikan format URL endpoint stream yang valid', () => {
+    const videoId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+    expect(videoApi.getStreamUrl(videoId)).toBe(`/api/videos/${videoId}/stream`);
+    expect(videoApi.getPreviewUrl(videoId)).toBe(`/api/videos/${videoId}/stream`);
+  });
+
+  it('VideoPlayerModal merender pemutar video HTML5 dengan kontrol, sumber stream, tautan produk, dan tombol unduh', () => {
+    const sampleVideo = {
+      id: 'video-uuid-123',
+      title: 'Video Demo Produk Affiliate',
+      description: 'Deskripsi lengkap video demo',
+      product_name: 'Earphone TWS Bluetooth',
+      product_url: 'https://shope.ee/sample_tws',
+      file_size: 15728640,
+      content_type: 'video/mp4',
+      status: 'active',
+      rack_name: 'Elektronik'
+    };
+
+    // 1. Saat modal terbuka
+    const openHtml = renderToStaticMarkup(
+      <VideoPlayerModal
+        isOpen={true}
+        onClose={vi.fn()}
+        video={sampleVideo}
+      />
+    );
+
+    expect(openHtml).toContain('Pratinjau: Video Demo Produk Affiliate');
+    expect(openHtml).toContain('<video');
+    expect(openHtml).toContain('controls=""');
+    expect(openHtml).toContain('preload="metadata"');
+    expect(openHtml).toContain('playsinline=""');
+    expect(openHtml).toContain('src="/api/videos/video-uuid-123/stream"');
+    expect(openHtml).toContain('type="video/mp4"');
+    expect(openHtml).toContain('Earphone TWS Bluetooth');
+    expect(openHtml).toContain('href="https://shope.ee/sample_tws"');
+    expect(openHtml).toContain('href="/api/videos/video-uuid-123/download"');
+    expect(openHtml).toContain('Elektronik');
+    expect(openHtml).toContain('15.0 MB');
+
+    // 2. Saat modal tertutup (isOpen = false) -> unmount (null)
+    const closedHtml = renderToStaticMarkup(
+      <VideoPlayerModal
+        isOpen={false}
+        onClose={vi.fn()}
+        video={sampleVideo}
+      />
+    );
+    expect(closedHtml).toBe('');
+
+    // 3. Saat video bernilai null -> unmount (null)
+    const nullVideoHtml = renderToStaticMarkup(
+      <VideoPlayerModal
+        isOpen={true}
+        onClose={vi.fn()}
+        video={null}
+      />
+    );
+    expect(nullVideoHtml).toBe('');
+  });
+
+  // ---------------------------------------------------------------------------
+  // FITUR 6: ADMIN DAPAT MENAMBAHKAN MEMBER BARU
+  // ---------------------------------------------------------------------------
+  it('AdminPage menampilkan tombol + Tambah Member di tab Users untuk role admin dan super_admin', () => {
+    // 1. Role: admin
+    const authSpyAdmin = vi.spyOn(authContext, 'useAuth').mockReturnValue({
+      user: {
+        id: 'usr-admin-f6',
+        username: 'admin_f6',
+        role: 'admin',
+        status: 'active'
+      },
+      device: null,
+      loading: false,
+      error: null,
+      refreshUser: vi.fn(),
+      logout: vi.fn(),
+      setUserFromResponse: vi.fn()
+    });
+
+    try {
+      const htmlAdmin = renderToStaticMarkup(
+        <RouterProvider>
+          <AdminPage initialTab="users" />
+        </RouterProvider>
+      );
+      expect(htmlAdmin).toContain('+ Tambah Member');
+    } finally {
+      authSpyAdmin.mockRestore();
+    }
+
+    // 2. Role: super_admin
+    const authSpySuper = vi.spyOn(authContext, 'useAuth').mockReturnValue({
+      user: {
+        id: 'usr-super-f6',
+        username: 'super_admin_f6',
+        role: 'super_admin',
+        status: 'active'
+      },
+      device: null,
+      loading: false,
+      error: null,
+      refreshUser: vi.fn(),
+      logout: vi.fn(),
+      setUserFromResponse: vi.fn()
+    });
+
+    try {
+      const htmlSuper = renderToStaticMarkup(
+        <RouterProvider>
+          <AdminPage initialTab="users" />
+        </RouterProvider>
+      );
+      expect(htmlSuper).toContain('+ Tambah Member');
+    } finally {
+      authSpySuper.mockRestore();
+    }
+  });
+
+  it('AdminPage menampilkan tombol + Buat Kode Aktivasi Member di tab Codes untuk role admin dan super_admin', () => {
+    // 1. Role: admin
+    const authSpyAdmin = vi.spyOn(authContext, 'useAuth').mockReturnValue({
+      user: {
+        id: 'usr-admin-f6-codes',
+        username: 'admin_f6_codes',
+        role: 'admin',
+        status: 'active'
+      },
+      device: null,
+      loading: false,
+      error: null,
+      refreshUser: vi.fn(),
+      logout: vi.fn(),
+      setUserFromResponse: vi.fn()
+    });
+
+    try {
+      const htmlAdmin = renderToStaticMarkup(
+        <RouterProvider>
+          <AdminPage initialTab="codes" />
+        </RouterProvider>
+      );
+      expect(htmlAdmin).toContain('+ Buat Kode Aktivasi Member');
+    } finally {
+      authSpyAdmin.mockRestore();
+    }
+
+    // 2. Role: super_admin
+    const authSpySuper = vi.spyOn(authContext, 'useAuth').mockReturnValue({
+      user: {
+        id: 'usr-super-f6-codes',
+        username: 'super_admin_f6_codes',
+        role: 'super_admin',
+        status: 'active'
+      },
+      device: null,
+      loading: false,
+      error: null,
+      refreshUser: vi.fn(),
+      logout: vi.fn(),
+      setUserFromResponse: vi.fn()
+    });
+
+    try {
+      const htmlSuper = renderToStaticMarkup(
+        <RouterProvider>
+          <AdminPage initialTab="codes" />
+        </RouterProvider>
+      );
+      expect(htmlSuper).toContain('+ Buat Kode Aktivasi Member');
+    } finally {
+      authSpySuper.mockRestore();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // FITUR: DATABASE ANGGOTA, FILTER, DAN PENGELOMPOKAN
+  // ---------------------------------------------------------------------------
+  it('AdminPage merender baris pencarian, filter peran/status/jalur/pengundang, tombol reset, dan toggle mode pengelompokan', () => {
+    const authSpy = vi.spyOn(authContext, 'useAuth').mockReturnValue({
+      user: {
+        id: 'usr-admin-f6-db',
+        username: 'admin_member_db',
+        role: 'admin',
+        status: 'active'
+      },
+      device: null,
+      loading: false,
+      error: null,
+      refreshUser: vi.fn(),
+      logout: vi.fn(),
+      setUserFromResponse: vi.fn()
+    });
+
+    try {
+      const html = renderToStaticMarkup(
+        <RouterProvider>
+          <AdminPage initialTab="users" />
+        </RouterProvider>
+      );
+
+      // Verifikasi komponen input pencarian
+      expect(html).toContain('placeholder="Cari username, WhatsApp, pengundang..."');
+
+      // Verifikasi filter dropdown
+      expect(html).toContain('Semua Peran');
+      expect(html).toContain('Khusus Member');
+      expect(html).toContain('Semua Status');
+      expect(html).toContain('Semua Jalur');
+      expect(html).toContain('Daftar Mandiri');
+      expect(html).toContain('Undangan (Referral)');
+      expect(html).toContain('Semua Pengundang');
+      expect(html).toContain('Tanpa Pengundang');
+
+      // Verifikasi tombol Reset Filter
+      expect(html).toContain('Reset Filter');
+
+      // Verifikasi toggle mode tampilan
+      expect(html).toContain('📋 Daftar Lengkap');
+      expect(html).toContain('👥 Kelompokkan per Pengundang');
+
+      // Verifikasi tabel dan empty state awal
+      expect(html).toContain('Nama Pengguna');
+      expect(html).toContain('Akun Shopee');
+      expect(html).toContain('WhatsApp');
+      expect(html).toContain('Jalur Pendaftaran');
+      expect(html).toContain('Perangkat Terikat');
+      expect(html).toContain('Aktivitas Terakhir');
+      expect(html).toContain('Tindakan');
+      expect(html).toContain('Tidak ada pengguna ditemukan.');
+    } finally {
+      authSpy.mockRestore();
+    }
+  });
+
+  it('Fitur 8: adminApi.updateUserStatus mengirim PATCH /api/admin/users/:id/status dengan credentials same-origin dan JSON body', async () => {
+    let capturedUrl = '';
+    let capturedOptions: RequestInit | undefined;
+
+    globalThis.fetch = vi.fn(async (url, options) => {
+      capturedUrl = String(url);
+      capturedOptions = options;
+      return new Response(
+        JSON.stringify({
+          status: 'ok',
+          message: 'Akun Member "budi" berhasil dinonaktifkan.',
+          user: { id: '00000000-0000-0000-0000-000000000001', username: 'budi', role: 'member', status: 'suspended' }
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }) as unknown as typeof fetch;
+
+    const res = await adminApi.updateUserStatus('00000000-0000-0000-0000-000000000001', {
+      status: 'suspended',
+      reason: 'Pelanggaran ketentuan'
+    });
+
+    expect(res.status).toBe('ok');
+    expect(capturedUrl).toBe('/api/admin/users/00000000-0000-0000-0000-000000000001/status');
+    expect(capturedOptions?.method).toBe('PATCH');
+    expect(capturedOptions?.credentials).toBe('same-origin');
+    const body = JSON.parse(capturedOptions?.body as string);
+    expect(body.status).toBe('suspended');
+    expect(body.reason).toBe('Pelanggaran ketentuan');
+  });
+
+  it('Fitur 8: adminApi.deleteUser mengirim DELETE /api/admin/users/:id dengan konfirmasi username dan same-origin credentials', async () => {
+    let capturedUrl = '';
+    let capturedOptions: RequestInit | undefined;
+
+    globalThis.fetch = vi.fn(async (url, options) => {
+      capturedUrl = String(url);
+      capturedOptions = options;
+      return new Response(
+        JSON.stringify({
+          status: 'ok',
+          message: 'Akun Member "budi" berhasil dihapus secara permanen.'
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }) as unknown as typeof fetch;
+
+    const res = await adminApi.deleteUser('00000000-0000-0000-0000-000000000001', {
+      confirm_username: 'budi'
+    });
+
+    expect(res.status).toBe('ok');
+    expect(capturedUrl).toBe('/api/admin/users/00000000-0000-0000-0000-000000000001');
+    expect(capturedOptions?.method).toBe('DELETE');
+    expect(capturedOptions?.credentials).toBe('same-origin');
+    const body = JSON.parse(capturedOptions?.body as string);
+    expect(body.confirm_username).toBe('budi');
+  });
+
+  it('Fitur 9: commissionApi mengelola bukti komisi dengan same-origin credentials', async () => {
+    let capturedUrl = '';
+    let capturedOptions: RequestInit | undefined;
+
+    globalThis.fetch = vi.fn(async (url, options) => {
+      capturedUrl = String(url);
+      capturedOptions = options;
+      return new Response(
+        JSON.stringify({
+          status: 'ok',
+          proof: {
+            id: 'proof-uuid-123',
+            original_filename: 'komisi_oktober.jpg',
+            file_size: 102400,
+            content_type: 'image/jpeg',
+            created_at: '2026-10-18T10:00:00Z',
+            updated_at: '2026-10-18T10:00:00Z'
+          }
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }) as unknown as typeof fetch;
+
+    // 1. getMemberProof
+    const getRes = await commissionApi.getMemberProof();
+    expect(getRes.status).toBe('ok');
+    expect(capturedUrl).toBe('/api/member/commission-proof');
+    expect(capturedOptions?.method).toBe('GET');
+    expect(capturedOptions?.credentials).toBe('same-origin');
+
+    // 2. uploadMemberProof
+    const dummyFile = new File(['image-bytes'], 'komisi.jpg', { type: 'image/jpeg' });
+    const uploadRes = await commissionApi.uploadMemberProof(dummyFile);
+    expect(uploadRes.status).toBe('ok');
+    expect(capturedUrl).toBe('/api/member/commission-proof');
+    expect(capturedOptions?.method).toBe('POST');
+    expect(capturedOptions?.credentials).toBe('same-origin');
+    expect(capturedOptions?.body instanceof FormData).toBe(true);
+
+    // 3. getAdminMemberProof
+    const adminGetRes = await commissionApi.getAdminMemberProof('user-uuid-456');
+    expect(adminGetRes.status).toBe('ok');
+    expect(capturedUrl).toBe('/api/admin/users/user-uuid-456/commission-proof');
+    expect(capturedOptions?.method).toBe('GET');
+
+    // 4. deleteAdminMemberProof
+    globalThis.fetch = vi.fn(async (url, options) => {
+      capturedUrl = String(url);
+      capturedOptions = options;
+      return new Response(
+        JSON.stringify({ status: 'ok', message: 'Bukti komisi berhasil dihapus.' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }) as unknown as typeof fetch;
+
+    const delRes = await commissionApi.deleteAdminMemberProof('user-uuid-456');
+    expect(delRes.status).toBe('ok');
+    expect(capturedUrl).toBe('/api/admin/users/user-uuid-456/commission-proof');
+    expect(capturedOptions?.method).toBe('DELETE');
+
+    // 5. getProofFileUrl
+    expect(commissionApi.getProofFileUrl('proof-123')).toBe('/api/commission-proofs/proof-123/file');
   });
 });
