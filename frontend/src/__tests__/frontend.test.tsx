@@ -522,7 +522,7 @@ describe('Frontend UI Components & Page Rendering', () => {
           <AdminPage initialTab="videos" />
         </RouterProvider>
       );
-      expect(html).toContain('Daftar Video di R2 Privat');
+      expect(html).toContain('Daftar Video Katalog');
       expect(html.toLowerCase()).toContain('maxlength="100"');
     } finally {
       authSpy.mockRestore();
@@ -615,7 +615,7 @@ describe('Frontend UI Components & Page Rendering', () => {
           <UserDashboardPage />
         </RouterProvider>
       );
-      expect(html).toContain('Mengambil katalog video dari Cloudflare R2...');
+      expect(html).toContain('Memuat katalog video...');
       expect(html).not.toContain('Halaman Berikutnya');
       expect(html).not.toContain('Halaman Sebelumnya');
     } finally {

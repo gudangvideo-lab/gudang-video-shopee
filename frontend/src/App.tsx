@@ -59,7 +59,7 @@ const AppRoutes: React.FC = () => {
       <footer className="app-footer">
         <div className="footer-container">
           <p className="text-muted text-xs">
-            &copy; {new Date().getFullYear()} Gudang Video Shopee Affiliate &bull; Cloudflare Workers &bull; D1 Database &bull; R2 Private Storage
+            &copy; {new Date().getFullYear()} Gudang Video Shopee Affiliate &bull; Hak Cipta Dilindungi
           </p>
         </div>
       </footer>

@@ -420,7 +420,7 @@ export const UserDashboardPage: React.FC = () => {
             <span className="card-icon">💻</span>
             <div>
               <h3 className="card-title">Perangkat Terikat Aktif</h3>
-              <p className="card-caption">Status ikatan peramban (Single Device Binding)</p>
+              <p className="card-caption">Status proteksi login satu akun satu perangkat</p>
             </div>
           </div>
 
@@ -508,20 +508,20 @@ export const UserDashboardPage: React.FC = () => {
             <div className="card-header-cluster">
               <span className="card-icon">🛡️</span>
               <div>
-                <h3 className="card-title">Penyimpanan & Keamanan R2</h3>
-                <p className="card-caption">Aset video disimpan di Cloudflare R2 Privat</p>
+                <h3 className="card-title">Penyimpanan & Keamanan Konten</h3>
+                <p className="card-caption">Aset video dilindungi dengan akses privat resmi</p>
               </div>
             </div>
 
             <ul className="security-guidelines">
               <li>
-                <strong>Penyimpanan Privat:</strong> Video tidak memiliki link publik; hanya dapat diunduh melalui streaming terverifikasi backend.
+                <strong>Akses Resmi:</strong> Video hanya dapat diakses dan diunduh oleh akun anggota resmi yang aktif.
               </li>
               <li>
-                <strong>Sesi & Akses:</strong> Unduhan langsung diverifikasi terhadap sesi aktif di browser ini.
+                <strong>Verifikasi Perangkat:</strong> Setiap pengunduhan diverifikasi terhadap akun aktif di perangkat ini.
               </li>
               <li>
-                <strong>Siap Komisi:</strong> Unduh materi promosi tanpa watermark dan sematkan tautan afiliasi Shopee Anda.
+                <strong>Materi Promosi:</strong> Unduh materi video untuk mendukung promosi tautan afiliasi Shopee Anda.
               </li>
             </ul>
           </div>
@@ -704,7 +704,7 @@ export const UserDashboardPage: React.FC = () => {
           {loadingVideos ? (
             <div className="catalog-loading-state">
               <span className="spinner" />
-              <p className="mt-2 text-muted text-sm">Mengambil katalog video dari Cloudflare R2...</p>
+              <p className="mt-2 text-muted text-sm">Memuat katalog video...</p>
             </div>
           ) : filteredVideos.length === 0 ? (
             <div className="catalog-empty-state">
@@ -717,12 +717,12 @@ export const UserDashboardPage: React.FC = () => {
               <p className="empty-description">
                 {searchQuery.trim()
                   ? `Tidak ditemukan video dengan kata kunci "${searchQuery}". Coba kata kunci lain.`
-                  : 'Katalog video sedang disiapkan oleh tim. Seluruh berkas video tersimpan di Cloudflare R2 privat dan akan muncul di sini segera setelah dirilis.'}
+                  : 'Katalog video sedang disiapkan oleh tim. Seluruh berkas video tersimpan aman dan akan muncul di sini segera setelah dirilis.'}
               </p>
               <div className="empty-pills">
-                <span className="empty-pill">⚡ Private Cloudflare R2</span>
-                <span className="empty-pill">🔒 Shopee Verified Member</span>
-                <span className="empty-pill">📦 Zero-Watermark Ready</span>
+                <span className="empty-pill">📁 Katalog Video Resmi</span>
+                <span className="empty-pill">🔒 Khusus Anggota Aktif</span>
+                <span className="empty-pill">🎬 Format MP4 & WebM</span>
               </div>
             </div>
           ) : (

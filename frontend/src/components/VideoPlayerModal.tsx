@@ -64,7 +64,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   const handleVideoError = () => {
     setHasError(true);
     setErrorMessage(
-      'Gagal memutar video. Berkas mungkin sedang diproses di penyimpanan R2 atau format tidak didukung oleh browser Anda.'
+      'Gagal memutar video. Berkas video sedang disiapkan di server atau format tidak didukung oleh browser Anda.'
     );
   };
 

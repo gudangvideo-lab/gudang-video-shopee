@@ -616,7 +616,7 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
         rack_id: uploadRackId || undefined,
         status: uploadStatus
       });
-      setActionSuccessMsg('Video berhasil diunggah ke Cloudflare R2 privat!');
+      setActionSuccessMsg('Video berhasil diunggah ke katalog!');
       setShowUploadModal(false);
       setUploadFile(null);
       setUploadTitle('');
@@ -631,7 +631,7 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
       if (err instanceof ApiClientError) {
         setErrorMsg(err.message);
       } else {
-        setErrorMsg('Gagal mengunggah video ke penyimpanan R2.');
+        setErrorMsg('Gagal mengunggah video ke katalog.');
       }
     } finally {
       setUploading(false);
@@ -684,14 +684,14 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
     setErrorMsg(null);
     try {
       await adminApi.deleteVideo(deletingVideo.id);
-      setActionSuccessMsg(`Video "${deletingVideo.title}" dan berkas R2 berhasil dihapus.`);
+      setActionSuccessMsg(`Video "${deletingVideo.title}" berhasil dihapus.`);
       setDeletingVideo(null);
       await fetchAllData();
     } catch (err) {
       if (err instanceof ApiClientError) {
         setErrorMsg(err.message);
       } else {
-        setErrorMsg('Gagal menghapus video dari R2 dan database.');
+        setErrorMsg('Gagal menghapus video.');
       }
     } finally {
       setDeleting(false);
@@ -1180,8 +1180,8 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
           </div>
           <p className="admin-page-subtitle">
             {user?.role === 'super_admin'
-              ? 'Kelola seluruh sistem: akun Administrator, penerbitan kode lisensi, katalog video R2, dan audit log komprehensif.'
-              : 'Kelola katalog video R2 privat, pemeriksaan konten, dan pemantauan operasional member.'}
+              ? 'Kelola seluruh sistem: akun Administrator, penerbitan kode lisensi, katalog video, dan log audit komprehensif.'
+              : 'Kelola katalog video, pemeriksaan konten, dan pemantauan operasional member.'}
           </p>
         </div>
 
@@ -1200,7 +1200,7 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
             className="btn-sm"
             onClick={() => setShowUploadModal(true)}
           >
-            + Unggah Video R2
+            + Unggah Video Baru
           </Button>
         </div>
       </div>
@@ -1339,7 +1339,7 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
             <div className="stat-card">
               <span className="stat-icon">🎬</span>
               <div className="stat-value">{videos.length}</div>
-              <div className="stat-label">Total Video di R2</div>
+              <div className="stat-label">Total Video di Katalog</div>
               <div className="stat-desc">
                 {videos.filter((v) => v.status === 'active').length} aktif / {videos.filter((v) => v.status === 'inactive').length} nonaktif
               </div>
@@ -1381,16 +1381,16 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
           </div>
 
           <div className="overview-info-card mt-6">
-            <h3>Arsitektur Keamanan Cloudflare R2 Privat</h3>
+            <h3>Standar Keamanan dan Privasi Konten</h3>
             <ul className="guidelines-list mt-2">
               <li>
-                <strong>Penyimpanan Non-Publik:</strong> Seluruh berkas video disimpan dalam bucket R2 privat tanpa URL publik permanen.
+                <strong>Penyimpanan Aman:</strong> Seluruh berkas video tersimpan di media privat tanpa akses publik langsung.
               </li>
               <li>
-                <strong>Pemeriksaan Otorisasi Berlapis:</strong> Sebelum streaming video dikirim, Worker memvalidasi keberadaan sesi, status keaktifan akun, status aktif video, dan kecocokan perangkat.
+                <strong>Pemeriksaan Otorisasi Berlapis:</strong> Sebelum streaming video diizinkan, sistem memvalidasi sesi aktif, keaktifan akun, status video, dan kecocokan perangkat pengguna.
               </li>
               <li>
-                <strong>Pencegahan Orphan Object:</strong> Jika proses penyimpanan database gagal saat pengunggahan, objek di R2 langsung di-rollback (dihapus).
+                <strong>Konsistensi Data:</strong> Jika proses penyimpanan mengalami kegagalan saat pengunggahan, sistem secara otomatis membersihkan file agar tidak terjadi inkonsistensi data.
               </li>
             </ul>
           </div>
@@ -1402,9 +1402,9 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
         <div className="tab-pane">
           <div className="table-header-bar" style={{ flexWrap: 'wrap', gap: '12px' }}>
             <div>
-              <h3>Daftar Video di R2 Privat ({videos.length})</h3>
+              <h3>Daftar Video Katalog ({videos.length})</h3>
               <p className="text-xs text-muted mt-1">
-                Katalog video Cloudflare R2 dengan navigasi cursor-based dan filter server-side.
+                Katalog materi video promosi dengan pencarian dan filter kategori.
               </p>
             </div>
             <Button
@@ -1497,7 +1497,7 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
                 {videos.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="text-center text-muted p-6">
-                      Belum ada video yang diunggah ke penyimpanan R2.
+                      Belum ada video yang ditambahkan ke dalam katalog.
                     </td>
                   </tr>
                 ) : (
@@ -2835,7 +2835,7 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
       <Modal
         isOpen={showUploadModal}
         onClose={() => setShowUploadModal(false)}
-        title="Unggah Video Baru ke Cloudflare R2"
+        title="Unggah Video Baru ke Katalog"
         maxWidth="600px"
       >
         <form onSubmit={handleUploadSubmit} className="space-y-4">
@@ -2856,7 +2856,7 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
               disabled={uploading}
             />
             <p className="form-helper-text">
-              Maksimum 100 MB per file. Disimpan ke Cloudflare R2 privat tanpa akses publik.
+              Maksimum 100 MB per file. Berkas video dilindungi dengan akses privat resmi.
             </p>
           </div>
 
@@ -2951,7 +2951,7 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
               type="submit"
               variant="primary"
               loading={uploading}
-              loadingText="Mengunggah ke R2..."
+              loadingText="Mengunggah berkas..."
             >
               Unggah Video Sekarang
             </Button>
@@ -3074,7 +3074,7 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
           </p>
           <div className="alert-box alert-danger">
             <p className="text-xs">
-              Tindakan ini permanen. File video akan dihapus dari Cloudflare R2 privat dan catatan database akan dibersihkan.
+              Tindakan ini bersifat permanen. Berkas video dan seluruh datanya akan dihapus sepenuhnya dari sistem.
             </p>
           </div>
           <div className="modal-actions-cluster mt-4">
@@ -3708,7 +3708,7 @@ export const AdminPage: React.FC<{ initialTab?: AdminTab }> = ({ initialTab = 'o
                 <div className="p-3 bg-red-50 border border-red-200 rounded text-xs text-red-800 space-y-3">
                   <p className="font-semibold">Konfirmasi Penghapusan Bukti Komisi</p>
                   <p>
-                    Apakah Anda yakin ingin menghapus bukti komisi aktif milik Member <strong>{selectedMemberForProof?.username}</strong>? Berkas akan dihapus permanen dari penyimpanan R2.
+                    Apakah Anda yakin ingin menghapus bukti komisi aktif milik Member <strong>{selectedMemberForProof?.username}</strong>? Berkas bukti ini akan dihapus secara permanen.
                   </p>
                   <div className="flex gap-2">
                     <Button
